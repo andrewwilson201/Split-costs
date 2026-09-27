@@ -1,0 +1,11 @@
+{
+  "name": "split-costs",
+  "version": "1.0.0",
+  "description": "Track shared trip expenses and work out who owes whom.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "python3 -m http.server 8000"
+  }
+}

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Split Costs</title>
+  <meta name="description" content="Track shared trip expenses and work out who owes whom.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>Split Costs</h1>
+    <div class="trip-picker">
+      <label for="trip-select" class="visually-hidden">Trip</label>
+      <select id="trip-select"></select>
+      <button type="button" id="new-trip" class="secondary">New trip</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <section id="no-trip" class="card empty" hidden>
+      <h2>Start a trip</h2>
+      <p>Create a trip, add the people going, then log expenses as you go.</p>
+      <button type="button" id="new-trip-empty">Create your first trip</button>
+    </section>
+
+    <div id="trip-view" hidden>
+      <section class="card trip-settings">
+        <div class="row">
+          <label class="grow">Trip name
+            <input id="trip-name" type="text" maxlength="60">
+          </label>
+          <label class="narrow">Currency
+            <input id="trip-currency" type="text" maxlength="4">
+          </label>
+        </div>
+        <button type="button" id="delete-trip" class="link danger">Delete this trip</button>
+      </section>
+
+      <nav class="tabs" role="tablist">
+        <button type="button" role="tab" data-tab="people">People</button>
+        <button type="button" role="tab" data-tab="expenses">Expenses</button>
+        <button type="button" role="tab" data-tab="settle">Settle up</button>
+      </nav>
+
+      <!-- People -->
+      <section class="card tab-panel" data-panel="people">
+        <h2>Who's on the trip?</h2>
+        <form id="add-person-form" class="row">
+          <input id="person-name" type="text" placeholder="Name" maxlength="40" required class="grow" aria-label="Person's name">
+          <button type="submit">Add</button>
+        </form>
+        <ul id="people-list" class="list"></ul>
+      </section>
+
+      <!-- Expenses -->
+      <section class="card tab-panel" data-panel="expenses">
+        <h2 id="expense-form-title">Add an expense</h2>
+        <p id="expenses-need-people" class="muted" hidden>Add at least one person before logging expenses.</p>
+        <form id="expense-form">
+          <div class="row">
+            <label class="grow">What was it?
+              <input id="expense-desc" type="text" placeholder="e.g. Dinner, fuel, hotel" maxlength="80" required>
+            </label>
+            <label class="narrow">Amount
+              <input id="expense-amount" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0.00" required>
+            </label>
+          </div>
+          <div class="row">
+            <label class="grow">Paid by
+              <select id="expense-payer" required></select>
+            </label>
+            <label class="narrow">Date
+              <input id="expense-date" type="date">
+            </label>
+          </div>
+          <fieldset>
+            <legend>Split between
+              <span class="split-actions">
+                <button type="button" class="link" id="split-all">All</button>
+                <button type="button" class="link" id="split-none">None</button>
+              </span>
+            </legend>
+            <div id="split-options" class="chips"></div>
+            <p id="split-preview" class="muted small"></p>
+          </fieldset>
+          <p id="expense-error" class="error" role="alert"></p>
+          <div class="row end">
+            <button type="button" id="cancel-edit" class="secondary" hidden>Cancel</button>
+            <button type="submit" id="expense-submit">Add expense</button>
+          </div>
+        </form>
+
+        <h2 class="spaced">Expenses <span id="expense-total" class="muted"></span></h2>
+        <ul id="expense-list" class="list"></ul>
+      </section>
+
+      <!-- Settle up -->
+      <section class="card tab-panel" data-panel="settle">
+        <h2>Balances</h2>
+        <div class="table-wrap">
+          <table id="balance-table">
+            <thead>
+              <tr><th>Person</th><th>Paid</th><th>Share</th><th>Balance</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h2 class="spaced">Who pays whom</h2>
+        <ul id="payment-list" class="list"></ul>
+        <button type="button" id="copy-summary" class="secondary">Copy summary</button>
+        <span id="copy-status" class="muted small" aria-live="polite"></span>
+      </section>
+    </div>
+  </main>
+
+  <footer class="muted small">Data is saved in this browser only.</footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
