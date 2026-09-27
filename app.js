@@ -575,6 +575,9 @@ $('#storage-note').textContent = {
   local: 'Saved in this browser only.',
 }[store.mode];
 $('#invite').hidden = store.mode !== 'firebase';
+if (store.connectError) {
+  showNotice(`Couldn't connect to the shared trip database, so changes are only being saved on this device. Reload the page to try again. (${store.connectError.message || store.connectError})`, true);
+}
 store.onLateWriteError(() => {
   showNotice("A change made while offline couldn't be saved. The trip may have been deleted.");
 });

@@ -19,7 +19,6 @@
 
 import { firebaseConfig } from './firebase-config.js';
 
-const FIREBASE_VERSION = '12.19.0';
 const LOCAL_KEY = 'split-costs:local-db:v1';
 const KNOWN_TRIPS_KEY = 'split-costs:known-trips';
 
@@ -37,6 +36,8 @@ export async function openStore() {
       return linkStore(await createFirebaseDb(firebaseConfig));
     } catch (e) {
       console.error('Could not connect to Firebase, saving on this device instead.', e);
+      // Say so on screen: quietly saving on one phone would split the trip's records.
+      return { ...collectionStore(createLocalDb(), 'local'), connectError: e };
     }
   }
   return collectionStore(createLocalDb(), 'local');
@@ -130,10 +131,10 @@ function linkStore(db) {
 }
 
 async function createFirebaseDb(config) {
-  const base = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}`;
+  // A copy of the SDK is served with the site (see vendor/firebase/README.md).
   const [{ initializeApp }, fs] = await Promise.all([
-    import(`${base}/firebase-app.js`),
-    import(`${base}/firebase-firestore.js`),
+    import('./vendor/firebase/firebase-app.js'),
+    import('./vendor/firebase/firebase-firestore.js'),
   ]);
   const { emulator, ...appConfig } = config;
   const app = initializeApp(appConfig);
