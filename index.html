@@ -2,151 +2,203 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Split Costs</title>
   <meta name="description" content="Track shared trip expenses and work out who owes whom.">
+  <meta name="theme-color" content="#0f2f2d">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header class="app-header">
-    <h1>Split Costs</h1>
+  <div id="trip-backdrop" class="backdrop" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="9" cy="12" r="6.5" />
+        <circle cx="15" cy="12" r="6.5" />
+      </svg>
+      <span>Split Costs</span>
+    </div>
     <div class="trip-picker">
       <label for="trip-select" class="visually-hidden">Trip</label>
-      <select id="trip-select"></select>
-      <button type="button" id="new-trip" class="secondary" hidden>New trip</button>
+      <select id="trip-select" class="on-dark"></select>
+      <button type="button" id="new-trip" class="ghost" hidden>New trip</button>
     </div>
   </header>
 
   <main id="app">
-    <p id="loading" class="muted">Loading trips…</p>
+    <p id="loading" class="on-dark-muted">Loading trips…</p>
     <p id="notice" class="notice" role="alert" hidden></p>
 
     <section id="no-trip" class="card empty" hidden>
-      <h2>Start a trip</h2>
-      <p>Create a trip, add the people going, then log expenses as you go.</p>
+      <h2 class="display">Start a trip</h2>
+      <p class="muted">Create a trip, add the people going, then log expenses as you go. Everyone on the trip sees the same numbers.</p>
       <button type="button" id="new-trip-empty">Create your first trip</button>
     </section>
 
     <div id="trip-view" hidden>
-      <section class="card trip-settings">
-        <div class="row">
-          <label class="grow">Trip name
-            <input id="trip-name" type="text" maxlength="60">
-          </label>
-          <label class="narrow">Main currency
-            <select id="trip-currency"></select>
-          </label>
-        </div>
-        <div id="currency-change" class="confirm-panel" hidden>
-          <p id="currency-change-text"></p>
-          <div class="row end">
-            <button type="button" id="currency-change-cancel" class="secondary">Cancel</button>
-            <button type="button" id="currency-change-confirm">Change currency</button>
+      <section class="hero">
+        <h1 id="hero-title" class="hero-title"></h1>
+        <p id="hero-summary" class="hero-summary"></p>
+        <div class="hero-actions">
+          <div id="invite" hidden>
+            <button type="button" id="copy-link" class="ghost">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" /></svg>
+              Copy invite link
+            </button>
           </div>
+          <label class="ghost button-like" for="photo-input">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
+            <span id="photo-button-label">Add cover photo</span>
+          </label>
+          <input id="photo-input" type="file" accept="image/*" class="visually-hidden">
         </div>
-        <div id="invite" class="invite" hidden>
-          <button type="button" id="copy-link" class="secondary">Copy invite link</button>
-          <span id="link-status" class="muted small" aria-live="polite"></span>
-        </div>
-        <div id="delete-trip-slot"></div>
+        <p id="link-status" class="hero-status" aria-live="polite"></p>
       </section>
 
-      <nav class="tabs" role="tablist">
-        <button type="button" role="tab" data-tab="people">People</button>
+      <nav class="tabs" role="tablist" aria-label="Trip sections">
         <button type="button" role="tab" data-tab="expenses">Expenses</button>
         <button type="button" role="tab" data-tab="settle">Settle up</button>
+        <button type="button" role="tab" data-tab="people">People</button>
+        <button type="button" role="tab" data-tab="settings">Trip</button>
       </nav>
 
-      <!-- People -->
-      <section class="card tab-panel" data-panel="people">
-        <h2>Who's on the trip?</h2>
-        <form id="add-person-form" class="row">
-          <input id="person-name" type="text" placeholder="Name" maxlength="40" required class="grow" aria-label="Person's name">
-          <button type="submit">Add</button>
-        </form>
-        <ul id="people-list" class="list"></ul>
-      </section>
-
       <!-- Expenses -->
-      <section class="card tab-panel" data-panel="expenses">
-        <h2 id="expense-form-title">Add an expense</h2>
-        <p id="expenses-need-people" class="muted" hidden>Add at least one person before logging expenses.</p>
-        <form id="expense-form">
-          <div class="row">
-            <label class="grow">What was it?
-              <input id="expense-desc" type="text" placeholder="e.g. Dinner, fuel, hotel" maxlength="80" required>
+      <div class="tab-panel stack" data-panel="expenses">
+        <section class="card">
+          <h2 id="expense-form-title">Add an expense</h2>
+          <p id="expenses-need-people" class="muted" hidden>Add the people on the trip first, on the People tab.</p>
+          <form id="expense-form" class="form">
+            <label>What was it?
+              <input id="expense-desc" type="text" placeholder="Dinner, taxi, museum tickets…" maxlength="80" required>
             </label>
-          </div>
-          <div class="row money-row">
-            <label class="grow">Amount
-              <input id="expense-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" required>
-            </label>
-            <label class="currency-field">Currency
-              <select id="expense-currency"></select>
-            </label>
-          </div>
-          <div id="rate-row" class="rate-row" hidden>
-            <label for="expense-rate" class="rate-line">
-              <span id="rate-from"></span>
-              <input id="expense-rate" type="number" inputmode="decimal" min="0" step="any" aria-describedby="rate-note">
-              <span id="rate-to"></span>
-            </label>
-            <p class="muted small">
-              <span id="rate-note" aria-live="polite"></span>
-              <button type="button" class="link" id="rate-reset" hidden>Use market rate</button>
-            </p>
-          </div>
-          <div class="row">
-            <label class="grow">Paid by
-              <select id="expense-payer" required></select>
-            </label>
-            <label class="narrow">Date
-              <input id="expense-date" type="date">
-            </label>
-          </div>
-          <fieldset>
-            <legend>Split between
-              <span class="split-actions">
-                <button type="button" class="link" id="split-all">All</button>
-                <button type="button" class="link" id="split-none">None</button>
-              </span>
-            </legend>
-            <div id="split-options" class="chips"></div>
-            <p id="split-preview" class="muted small"></p>
-          </fieldset>
-          <p id="expense-error" class="error" role="alert"></p>
-          <div class="row end">
-            <button type="button" id="cancel-edit" class="secondary" hidden>Cancel</button>
-            <button type="submit" id="expense-submit">Add expense</button>
-          </div>
-        </form>
+            <div class="row money-row">
+              <label class="grow">Amount
+                <input id="expense-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" required>
+              </label>
+              <label class="currency-field">Currency
+                <select id="expense-currency"></select>
+              </label>
+            </div>
+            <div id="rate-row" class="rate-row" hidden>
+              <label for="expense-rate" class="rate-line">
+                <span id="rate-from"></span>
+                <input id="expense-rate" type="number" inputmode="decimal" min="0" step="any" aria-describedby="rate-note">
+                <span id="rate-to"></span>
+              </label>
+              <p class="small muted">
+                <span id="rate-note" aria-live="polite"></span>
+                <button type="button" class="link" id="rate-reset" hidden>Use market rate</button>
+              </p>
+            </div>
+            <div class="row">
+              <label class="grow">Paid by
+                <select id="expense-payer" required></select>
+              </label>
+              <label class="date-field">Date
+                <input id="expense-date" type="date">
+              </label>
+            </div>
+            <fieldset>
+              <legend>Split between
+                <span class="split-actions">
+                  <button type="button" class="link" id="split-all">All</button>
+                  <button type="button" class="link" id="split-none">None</button>
+                </span>
+              </legend>
+              <div id="split-options" class="chips"></div>
+              <p id="split-preview" class="small muted"></p>
+            </fieldset>
+            <p id="expense-error" class="error" role="alert"></p>
+            <div class="form-actions">
+              <div id="delete-expense-slot"></div>
+              <button type="button" id="cancel-edit" class="secondary" hidden>Cancel</button>
+              <button type="submit" id="expense-submit">Add expense</button>
+            </div>
+          </form>
+        </section>
 
-        <h2 class="spaced">Expenses <span id="expense-total" class="muted"></span></h2>
-        <ul id="expense-list" class="list"></ul>
-      </section>
+        <section class="card">
+          <div class="card-head">
+            <h2>Expenses</h2>
+            <span id="expense-total" class="figure"></span>
+          </div>
+          <ul id="expense-list" class="list"></ul>
+        </section>
+      </div>
 
       <!-- Settle up -->
-      <section class="card tab-panel" data-panel="settle">
-        <h2>Balances</h2>
-        <div class="table-wrap">
-          <table id="balance-table">
-            <thead>
-              <tr><th>Person</th><th>Paid</th><th>Share</th><th>Balance</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
+      <div class="tab-panel stack" data-panel="settle">
+        <section class="card">
+          <h2>Who pays whom</h2>
+          <p id="settle-warning" class="error" role="status"></p>
+          <ul id="payment-list" class="list payments"></ul>
+          <div class="card-foot">
+            <button type="button" id="copy-summary" class="secondary">Copy summary</button>
+            <span id="copy-status" class="small muted" aria-live="polite"></span>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Balances</h2>
+          <ul id="balance-list" class="list"></ul>
+        </section>
+      </div>
 
-        <p id="settle-warning" class="error" role="status"></p>
-        <h2 class="spaced">Who pays whom</h2>
-        <ul id="payment-list" class="list"></ul>
-        <button type="button" id="copy-summary" class="secondary">Copy summary</button>
-        <span id="copy-status" class="muted small" aria-live="polite"></span>
-      </section>
+      <!-- People -->
+      <div class="tab-panel stack" data-panel="people">
+        <section class="card">
+          <h2>Who's on the trip?</h2>
+          <form id="add-person-form" class="row add-person">
+            <input id="person-name" type="text" placeholder="Name" maxlength="40" required class="grow" aria-label="Person's name">
+            <button type="submit">Add</button>
+          </form>
+          <ul id="people-list" class="list"></ul>
+        </section>
+      </div>
+
+      <!-- Trip settings -->
+      <div class="tab-panel stack" data-panel="settings">
+        <section class="card form">
+          <h2>Trip details</h2>
+          <label>Trip name
+            <input id="trip-name" type="text" maxlength="60">
+          </label>
+          <label>Main currency
+            <select id="trip-currency"></select>
+          </label>
+          <p class="small muted">Balances and payments are worked out in the main currency.</p>
+          <div id="currency-change" class="confirm-panel" hidden>
+            <p id="currency-change-text"></p>
+            <div class="form-actions">
+              <button type="button" id="currency-change-cancel" class="secondary">Cancel</button>
+              <button type="button" id="currency-change-confirm">Change currency</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Cover photo</h2>
+          <div id="photo-preview" class="photo-preview" hidden></div>
+          <p id="photo-status" class="small muted" aria-live="polite">The photo fills the background whenever this trip is open.</p>
+          <div class="form-actions start">
+            <label class="button-like secondary" for="photo-input" id="photo-change">Choose photo</label>
+            <div id="photo-remove-slot"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Delete trip</h2>
+          <p class="small muted">Removes the trip, its people and all expenses for everyone.</p>
+          <div id="delete-trip-slot"></div>
+        </section>
+      </div>
     </div>
   </main>
 
-  <footer id="storage-note" class="muted small"></footer>
+  <footer id="storage-note" class="footer"></footer>
 
   <script type="module" src="app.js"></script>
 </body>

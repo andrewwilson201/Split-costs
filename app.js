@@ -4,6 +4,7 @@ import {
   formatMoney, convertMinor, expenseCurrency, amountInTripCurrency, formatRate, fetchRate,
 } from './currency.js';
 import { openStore } from './store.js';
+import { compressPhoto, isPhotoDataUrl } from './photo.js';
 
 // ---------- Per-viewer preferences (which trip / tab is open) ----------
 
@@ -15,7 +16,9 @@ function loadPrefs() {
     return {};
   }
 }
-const prefs = { tripId: null, tab: 'people', ...loadPrefs() };
+const TABS = ['expenses', 'settle', 'people', 'settings'];
+const prefs = { tripId: null, tab: 'expenses', ...loadPrefs() };
+if (!TABS.includes(prefs.tab)) prefs.tab = 'expenses';
 function savePrefs() {
   try {
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
@@ -31,6 +34,7 @@ let db = null;
 let trips = [];
 let people = [];
 let expenses = [];
+let photo = null; // {dataUrl, updatedAt} for the open trip
 let loadedTripId = null;
 let unsubscribeTrip = [];
 
@@ -65,6 +69,7 @@ function expensesInTripCurrency() {
 const tripDoc = (id) => db.doc(`trips/${id}`);
 const peopleCol = (tripId) => db.collection(`trips/${tripId}/people`);
 const expensesCol = (tripId) => db.collection(`trips/${tripId}/expenses`);
+const photoDoc = (tripId) => db.doc(`trips/${tripId}/photo/cover`);
 
 function subscribeToTrip(tripId) {
   if (tripId === loadedTripId) return;
@@ -73,6 +78,7 @@ function subscribeToTrip(tripId) {
   loadedTripId = tripId;
   people = [];
   expenses = [];
+  photo = null;
   if (!tripId) return;
   unsubscribeTrip.push(
     peopleCol(tripId).onSnapshot((snap) => {
@@ -83,6 +89,12 @@ function subscribeToTrip(tripId) {
       expenses = docsOf(snap);
       render();
     }, onSubscribeError),
+    // A trip works fine without its photo, so photo errors stay quiet.
+    photoDoc(tripId).onSnapshot((snap) => {
+      const data = snap.exists ? snap.data() : null;
+      photo = data && isPhotoDataUrl(data.dataUrl) ? data : null;
+      render();
+    }, () => {}),
   );
 }
 
@@ -168,6 +180,19 @@ function confirmButton(label, confirmLabel, onConfirm, attrs = {}) {
   return btn;
 }
 
+const AVATAR_COLOURS = ['#0f766e', '#6d28d9', '#b8420f', '#1d4ed8', '#be185d', '#4d7c0f', '#0e7490', '#92400e'];
+
+/** A coloured circle with a person's initials. */
+function avatar(id, small = false) {
+  const name = personName(id);
+  const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+  let hash = 0;
+  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const el = h('span', { class: small ? 'avatar small' : 'avatar', 'aria-hidden': 'true' }, initials);
+  el.style.setProperty('--avatar', AVATAR_COLOURS[hash % AVATAR_COLOURS.length]);
+  return el;
+}
+
 // ---------- Trips ----------
 
 async function createTrip() {
@@ -180,7 +205,7 @@ async function createTrip() {
   if (!ok) return;
   store.rememberTrip(id);
   prefs.tripId = id;
-  prefs.tab = 'people';
+  prefs.tab = 'settings';
   savePrefs();
   render();
   $('#trip-name').focus();
@@ -301,6 +326,7 @@ async function deleteTrip(trip) {
       const snap = await col.get();
       for (const d of snap.docs) await col.doc(d.id).delete();
     }
+    await photoDoc(trip.id).delete();
     await tripDoc(trip.id).delete();
   });
   store.forgetTrip(trip.id);
@@ -367,17 +393,18 @@ function renderPeople() {
       return h('li', {},
         input,
         h('button', { type: 'button', onclick: () => finish(true) }, 'Save'),
-        h('button', { type: 'button', class: 'icon', onclick: () => finish(false) }, 'Cancel'),
+        h('button', { type: 'button', class: 'quiet', onclick: () => finish(false) }, 'Cancel'),
       );
     }
     const inUse = personInUse(p.id);
     return h('li', {},
+      avatar(p.id),
       h('div', { class: 'main title' }, p.name),
-      h('button', { type: 'button', class: 'icon', onclick: () => { renamingId = p.id; render(); } }, 'Rename'),
+      h('button', { type: 'button', class: 'quiet', onclick: () => { renamingId = p.id; render(); } }, 'Rename'),
       inUse
-        ? h('button', { type: 'button', class: 'icon', disabled: true, title: 'Remove them from expenses first' }, 'Remove')
+        ? h('button', { type: 'button', class: 'quiet', disabled: true, title: 'Remove them from expenses first' }, 'Remove')
         : confirmButton('Remove', 'Tap to confirm', () => write(() => peopleCol(currentTrip().id).doc(p.id).delete()),
-          { class: 'icon danger' }),
+          { class: 'quiet danger' }),
     );
   }));
 }
@@ -523,6 +550,19 @@ function renderExpenseForm() {
   $('#expense-form-title').textContent = editingId ? 'Edit expense' : 'Add an expense';
   $('#expense-submit').textContent = editingId ? 'Save changes' : 'Add expense';
   $('#cancel-edit').hidden = !editingId;
+  const deleteSlot = $('#delete-expense-slot');
+  if (editingId && deleteSlot.dataset.for !== editingId) {
+    const id = editingId;
+    deleteSlot.replaceChildren(confirmButton('Delete', 'Tap again to delete', async () => {
+      resetExpenseForm();
+      render();
+      await write(() => expensesCol(currentTrip().id).doc(id).delete());
+    }, { class: 'danger' }));
+    deleteSlot.dataset.for = id;
+  } else if (!editingId && deleteSlot.dataset.for) {
+    deleteSlot.replaceChildren();
+    delete deleteSlot.dataset.for;
+  }
   updateSplitPreview();
 }
 
@@ -640,12 +680,14 @@ function startEdit(expense) {
   $('#expense-desc').focus();
 }
 
+const dayLabel = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+
 function renderExpenses() {
   const list = $('#expense-list');
   const trip = tripCurrency();
   const { usable } = expensesInTripCurrency();
   const total = usable.reduce((s, e) => s + e.amountCents, 0);
-  $('#expense-total').textContent = expenses.length ? `· ${money(total)} total` : '';
+  $('#expense-total').textContent = expenses.length ? money(total) : '';
 
   if (expenses.length === 0) {
     list.replaceChildren(h('li', { class: 'empty-row' }, 'No expenses yet.'));
@@ -654,32 +696,35 @@ function renderExpenses() {
 
   const sorted = [...expenses].sort((a, b) =>
     (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
-  list.replaceChildren(...sorted.map((e) => {
+
+  // Group by day, newest first, with each day's total in the main currency.
+  const rows = [];
+  let day = null;
+  for (const e of sorted) {
+    if ((e.date || '') !== day) {
+      day = e.date || '';
+      const dayTotal = usable.filter((x) => (x.date || '') === day).reduce((s, x) => s + x.amountCents, 0);
+      rows.push(h('li', { class: 'day' }, h('span', {}, day ? dayLabel(day) : 'No date'), h('span', {}, money(dayTotal))));
+    }
     const everyone = people.length > 1 && people.every((p) => e.splitAmong.includes(p.id));
     const splitText = everyone ? 'everyone' : e.splitAmong.map(personName).join(', ');
     const cur = expenseCurrency(e, trip);
     const inTrip = amountInTripCurrency(e, trip);
     const original = formatMoney(e.amountCents, cur);
     const paid = cur === trip ? 'paid' : inTrip == null ? `paid ${original}` : `paid ${original} at ${formatRate(e.rate)}`;
-    return h('li', { class: e.id === editingId ? 'editing' : null },
-      h('div', { class: 'main' },
-        h('div', { class: 'title' }, e.description),
-        h('div', { class: 'muted small' },
-          `${personName(e.paidBy)} ${paid} · split between ${splitText}${e.date ? ` · ${e.date}` : ''}`),
-        inTrip == null
-          ? h('div', { class: 'small needs-rate' }, `No exchange rate into ${trip}. Tap Edit to add one.`)
-          : null,
+    rows.push(h('li', { class: e.id === editingId ? 'expense editing' : 'expense' },
+      h('button', { type: 'button', class: 'expense-button', 'aria-label': `Edit ${e.description}`, onclick: () => startEdit(e) },
+        avatar(e.paidBy),
+        h('div', { class: 'main' },
+          h('div', { class: 'title' }, e.description),
+          h('div', { class: 'sub' }, `${personName(e.paidBy)} ${paid} · split between ${splitText}`),
+          inTrip == null ? h('div', { class: 'sub needs-rate' }, `No exchange rate into ${trip}. Tap to add one.`) : null,
+        ),
+        h('div', { class: inTrip == null ? 'amount needs-rate' : 'amount' }, inTrip == null ? original : money(inTrip)),
       ),
-      inTrip == null
-        ? h('div', { class: 'amount needs-rate' }, original)
-        : h('div', { class: 'amount' }, money(inTrip)),
-      h('button', { type: 'button', class: 'icon', onclick: () => startEdit(e) }, 'Edit'),
-      confirmButton('Delete', 'Tap to confirm', async () => {
-        if (editingId === e.id) resetExpenseForm();
-        await write(() => expensesCol(currentTrip().id).doc(e.id).delete());
-      }, { class: 'icon danger' }),
-    );
-  }));
+    ));
+  }
+  list.replaceChildren(...rows);
 }
 
 // ---------- Settle up ----------
@@ -692,20 +737,22 @@ function renderSettle() {
     : '';
   const payments = settleUp(balances);
 
-  const rows = people.map((p) => {
+  $('#balance-list').replaceChildren(...(people.length ? people.map((p) => {
     const b = balances.get(p.id);
-    const cls = b.net > 0 ? 'positive' : b.net < 0 ? 'negative' : '';
-    const label = b.net > 0 ? `gets back ${money(b.net)}` : b.net < 0 ? `owes ${money(-b.net)}` : 'settled';
-    return h('tr', {},
-      h('td', {}, p.name),
-      h('td', {}, money(b.paid)),
-      h('td', {}, money(b.share)),
-      h('td', { class: cls }, label),
+    const pill = b.net > 0
+      ? h('span', { class: 'pill positive' }, `gets back ${money(b.net)}`)
+      : b.net < 0
+        ? h('span', { class: 'pill negative' }, `owes ${money(-b.net)}`)
+        : h('span', { class: 'pill neutral' }, 'settled');
+    return h('li', {},
+      avatar(p.id),
+      h('div', { class: 'main' },
+        h('div', { class: 'title' }, p.name),
+        h('div', { class: 'sub' }, `Paid ${money(b.paid)} · share ${money(b.share)}`),
+      ),
+      pill,
     );
-  });
-  $('#balance-table tbody').replaceChildren(
-    ...(rows.length ? rows : [h('tr', {}, h('td', { colspan: 4, class: 'muted' }, 'Add people to see balances.'))]),
-  );
+  }) : [h('li', { class: 'empty-row' }, 'Add people to see balances.')]));
 
   const list = $('#payment-list');
   if (payments.length === 0) {
@@ -713,17 +760,17 @@ function renderSettle() {
       expenses.length ? 'Everyone is square. Nothing to pay.' : 'Add some expenses to see who owes whom.'));
   } else {
     list.replaceChildren(...payments.map((p) =>
-      h('li', { class: 'payment' },
-        h('div', { class: 'main' },
-          h('strong', {}, personName(p.from)),
-          h('span', { class: 'arrow' }, 'pays →'),
-          h('strong', {}, personName(p.to)),
+      h('li', {},
+        h('div', { class: 'main who' },
+          avatar(p.from, true), h('span', {}, personName(p.from)),
+          h('span', { class: 'arrow' }, 'pays'),
+          avatar(p.to, true), h('span', {}, personName(p.to)),
         ),
         h('div', { class: 'amount' }, money(p.amountCents)),
       ),
     ));
   }
-  $('#copy-summary').hidden = payments.length === 0;
+  $('#copy-summary').parentElement.hidden = payments.length === 0;
 }
 
 $('#copy-summary').addEventListener('click', () => {
@@ -763,7 +810,9 @@ function render() {
   renderTripSelect();
   $('#no-trip').hidden = !!trip;
   $('#trip-view').hidden = !trip;
+  renderBackdrop();
   if (!trip) return;
+  renderHero(trip);
   if (store.mode === 'firebase' && location.hash !== `#${trip.id}`) {
     history.replaceState(null, '', `#${trip.id}`); // the address bar is always the trip's link
   }
@@ -780,11 +829,74 @@ function render() {
   renderExpenses();
   renderSettle();
 
-  $('#delete-trip-slot').replaceChildren(
-    confirmButton('Delete this trip', 'Tap again to delete the trip and all its expenses', () => deleteTrip(trip),
-      { class: 'link danger' }),
-  );
+  const deleteSlot = $('#delete-trip-slot');
+  if (deleteSlot.dataset.for !== trip.id) {
+    deleteSlot.replaceChildren(
+      confirmButton('Delete this trip', 'Tap again to delete it for everyone', () => deleteTrip(trip), { class: 'danger' }),
+    );
+    deleteSlot.dataset.for = trip.id;
+  }
 }
+
+function renderHero(trip) {
+  $('#hero-title').textContent = trip.name || 'Untitled trip';
+  const { usable } = expensesInTripCurrency();
+  const total = usable.reduce((s, e) => s + e.amountCents, 0);
+  const dates = expenses.map((e) => e.date).filter(Boolean).sort();
+  const parts = [];
+  const summary = $('#hero-summary');
+  summary.replaceChildren();
+  if (expenses.length) summary.append(h('strong', {}, money(total)), ' spent');
+  parts.push(`${people.length} ${people.length === 1 ? 'person' : 'people'}`);
+  if (dates.length) {
+    const fmt = (iso, withYear) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,
+      withYear ? { day: 'numeric', month: 'short', year: 'numeric' } : { day: 'numeric', month: 'short' });
+    const first = dates[0];
+    const last = dates[dates.length - 1];
+    parts.push(first === last ? fmt(first, true) : `${fmt(first, first.slice(0, 4) !== last.slice(0, 4))} – ${fmt(last, true)}`);
+  }
+  summary.append(`${expenses.length ? ' · ' : ''}${parts.join(' · ')}`);
+  $('#photo-button-label').textContent = photo ? 'Change photo' : 'Add cover photo';
+}
+
+let shownPhotoKey = null;
+function renderBackdrop() {
+  const trip = currentTrip();
+  const key = trip && photo ? `${trip.id}:${photo.updatedAt}:${photo.dataUrl.length}` : null;
+  if (key === shownPhotoKey) return;
+  shownPhotoKey = key;
+  const backdrop = $('#trip-backdrop');
+  const preview = $('#photo-preview');
+  // isPhotoDataUrl guarantees a plain base64 JPEG, so it's safe inside url("").
+  const image = key ? `url("${photo.dataUrl}")` : '';
+  backdrop.style.backgroundImage = image;
+  backdrop.classList.toggle('has-photo', !!key);
+  preview.style.backgroundImage = image;
+  preview.hidden = !key;
+  const removeSlot = $('#photo-remove-slot');
+  removeSlot.replaceChildren(key
+    ? confirmButton('Remove photo', 'Tap again to remove', () => write(() => photoDoc(currentTrip().id).delete()), { class: 'danger' })
+    : '');
+  $('#photo-change').textContent = key ? 'Change photo' : 'Choose photo';
+}
+
+$('#photo-input').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  const trip = currentTrip();
+  if (!file || !trip) return;
+  const status = $('#photo-status');
+  status.textContent = 'Preparing photo…';
+  try {
+    const dataUrl = await compressPhoto(file);
+    status.textContent = 'Saving photo…';
+    const ok = await write(() => photoDoc(trip.id).set({ dataUrl, updatedAt: Date.now() }));
+    status.textContent = ok ? 'Photo saved. Everyone on the trip will see it.' : "The photo couldn't be saved.";
+  } catch (err) {
+    status.textContent = err.message || "That photo couldn't be used.";
+    showNotice(status.textContent);
+  }
+});
 
 // ---------- Invite link (Firebase mode) ----------
 

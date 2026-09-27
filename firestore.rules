@@ -54,6 +54,14 @@ service cloud.firestore {
         && d.createdAt is number;
     }
 
+    function validPhoto(d) {
+      return d.keys().hasOnly(['dataUrl', 'updatedAt'])
+        && d.dataUrl is string
+        && d.dataUrl.size() <= 240000
+        && d.dataUrl.matches('^data:image/jpeg;base64,[A-Za-z0-9+/=]+$')
+        && d.updatedAt is number;
+    }
+
     match /trips/{tripId} {
       allow get: if true;
       allow list: if false;
@@ -69,6 +77,12 @@ service cloud.firestore {
       match /expenses/{expenseId} {
         allow read, delete: if tripExists(tripId);
         allow create, update: if tripExists(tripId) && validExpense(request.resource.data);
+      }
+
+      // The trip's cover photo: one small JPEG stored as a data URL.
+      match /photo/{photoId} {
+        allow read, delete: if tripExists(tripId);
+        allow create, update: if tripExists(tripId) && photoId == 'cover' && validPhoto(request.resource.data);
       }
     }
 

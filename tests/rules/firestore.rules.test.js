@@ -89,6 +89,20 @@ test('expenses in another currency need valid rate fields', async () => {
   await assertFails(setDoc(ref, { ...foreign, rateTo: 'gbp' }));
 });
 
+test('a trip can have one small JPEG cover photo', async () => {
+  await setDoc(doc(db, 'trips', TRIP), trip);
+  const cover = doc(db, 'trips', TRIP, 'photo', 'cover');
+  const dataUrl = `data:image/jpeg;base64,${'A'.repeat(200000)}`;
+  await assertSucceeds(setDoc(cover, { dataUrl, updatedAt: 1 }));
+  await assertSucceeds(getDoc(cover));
+  await assertSucceeds(deleteDoc(cover));
+  await assertFails(setDoc(doc(db, 'trips', TRIP, 'photo', 'other'), { dataUrl, updatedAt: 1 }));
+  await assertFails(setDoc(cover, { dataUrl: `data:image/jpeg;base64,${'A'.repeat(240000)}`, updatedAt: 1 }));
+  await assertFails(setDoc(cover, { dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=', updatedAt: 1 }));
+  await assertFails(setDoc(cover, { dataUrl: 'data:image/jpeg;base64,AAAA");background:url(x', updatedAt: 1 }));
+  await assertFails(setDoc(doc(db, 'trips', 'b6f7a0de-0000-4f5e-9a8d-000000000000', 'photo', 'cover'), { dataUrl, updatedAt: 1 }));
+});
+
 test('other collections are closed', async () => {
   await assertFails(setDoc(doc(db, 'other', 'x'), { a: 1 }));
 });

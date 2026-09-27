@@ -261,6 +261,15 @@ function createLocalDb() {
       delete docs[path];
       persist();
     },
+    onSnapshot(next) {
+      const fire = () => {
+        const data = docs[path];
+        next({ id: path.split('/').pop(), exists: !!data, data: () => data, metadata });
+      };
+      listeners.add(fire);
+      queueMicrotask(fire);
+      return () => listeners.delete(fire);
+    },
     collection: (sub) => collectionRef(`${path}/${sub}`),
   });
 

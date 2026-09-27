@@ -15,6 +15,9 @@ A small web app for tracking shared spending on a trip and working out who owes 
   be edited. Balances and payments are shown in the main currency. Changing
   the main currency converts existing expenses; rates entered by hand are
   kept and converted through the old main currency.
+- **Cover photos**: each trip can have a photo, which fills the background
+  whenever the trip is open. Photos are shrunk on the phone to about 200 KB
+  and stored with the trip, so no separate file storage is needed.
 - **Settle up**: shows what each person paid, their fair share and their
   balance, then lists the fewest payments needed to even everything out
   (at most *n − 1* payments for *n* people). Use "Copy summary" to paste it
