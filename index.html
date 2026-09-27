@@ -13,11 +13,14 @@
     <div class="trip-picker">
       <label for="trip-select" class="visually-hidden">Trip</label>
       <select id="trip-select"></select>
-      <button type="button" id="new-trip" class="secondary">New trip</button>
+      <button type="button" id="new-trip" class="secondary" hidden>New trip</button>
     </div>
   </header>
 
   <main id="app">
+    <p id="loading" class="muted">Loading trips…</p>
+    <p id="notice" class="notice" role="alert" hidden></p>
+
     <section id="no-trip" class="card empty" hidden>
       <h2>Start a trip</h2>
       <p>Create a trip, add the people going, then log expenses as you go.</p>
@@ -34,7 +37,7 @@
             <input id="trip-currency" type="text" maxlength="4">
           </label>
         </div>
-        <button type="button" id="delete-trip" class="link danger">Delete this trip</button>
+        <div id="delete-trip-slot"></div>
       </section>
 
       <nav class="tabs" role="tablist">
@@ -115,7 +118,7 @@
     </div>
   </main>
 
-  <footer class="muted small">Data is saved in this browser only.</footer>
+  <footer id="storage-note" class="muted small"></footer>
 
   <script type="module" src="app.js"></script>
 </body>
