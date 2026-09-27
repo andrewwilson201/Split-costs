@@ -60,17 +60,26 @@ export const isPayment = (e) => e.kind === 'payment';
  */
 export function expenseShares(e) {
   const ids = e.splitAmong.filter(Boolean);
-  if (e.splitMode === 'shares' || e.splitMode === 'exact') {
-    const weights = ids.map((id) => Math.max(0, Number(e.splitWeights?.[id]) || 0));
-    if (weights.some((w) => w > 0)) return allocate(e.amountCents, weights);
-  }
-  return splitAmount(e.amountCents, ids.length);
+  const weights = shareWeights(e, ids);
+  return weights ? allocate(e.amountCents, weights) : splitAmount(e.amountCents, ids.length);
+}
+
+/** The weights an uneven split uses, or null for an equal split. */
+function shareWeights(e, ids) {
+  if (e.splitMode !== 'shares' && e.splitMode !== 'exact') return null;
+  const weights = ids.map((id) => Math.max(0, Number(e.splitWeights?.[id]) || 0));
+  return weights.some((w) => w > 0) ? weights : null;
 }
 
 /**
  * Work out what each person paid, what their fair share was, any repayments
  * they've made or received, and their net position (positive = they are owed
  * money, negative = they owe money).
+ *
+ * Shares are added up exactly across the whole trip and rounded to whole
+ * pennies once at the end, so nobody picks up the odd penny from every
+ * uneven split: each person's share is within a penny of the exact amount,
+ * and the shares still add up exactly to what was spent.
  *
  * @returns {Map<string, {paid: number, share: number, sent: number, received: number, net: number}>}
  */
@@ -82,6 +91,8 @@ export function computeBalances(people, expenses) {
     return balances.get(id);
   };
 
+  const exact = new Map(); // person -> exact (unrounded) share
+  let spent = 0;
   for (const e of expenses) {
     const participants = e.splitAmong.filter(Boolean);
     if (!e.paidBy || participants.length === 0 || !(e.amountCents > 0)) continue;
@@ -92,12 +103,19 @@ export function computeBalances(people, expenses) {
       continue;
     }
     ensure(e.paidBy).paid += e.amountCents;
-    const shares = expenseShares(e);
+    spent += e.amountCents;
+    const weights = shareWeights(e, participants) ?? participants.map(() => 1);
+    const total = weights.reduce((s, w) => s + w, 0);
     participants.forEach((id, i) => {
-      ensure(id).share += shares[i];
+      ensure(id);
+      exact.set(id, (exact.get(id) ?? 0) + (e.amountCents * weights[i]) / total);
     });
   }
 
+  const ids = [...exact.keys()];
+  allocate(spent, ids.map((id) => exact.get(id))).forEach((share, i) => {
+    balances.get(ids[i]).share = share;
+  });
   for (const b of balances.values()) b.net = b.paid - b.share + b.sent - b.received;
   return balances;
 }

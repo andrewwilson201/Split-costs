@@ -3,7 +3,7 @@
 // and the last copy is used when offline. Trip data itself is kept on the
 // device by Firestore, not here.
 
-const CACHE = 'split-costs-v2';
+const CACHE = 'split-costs-v3';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'settle.js', 'store.js', 'currency.js', 'photo.js',
   'categories.js', 'households.js', 'firebase-config.js', 'vendor/firebase/firebase-app.js',

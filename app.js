@@ -1426,15 +1426,31 @@ window.addEventListener('appinstalled', () => {
   renderInstall();
 });
 
+// The address the app lives at (without a trip), for people who installed it and forgot.
+const appAddress = () => `${location.origin}${location.pathname.replace(/index\.html$/, '')}`;
+const prettyAddress = () => appAddress().replace(/^https?:\/\//, '').replace(/\/$/, '');
+
 function renderInstall() {
   const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  $('#install-card').hidden = installed || !(installPrompt || ios);
-  $('#install-button').hidden = !installPrompt;
-  if (ios && !installPrompt) {
-    $('#install-text').textContent = 'In Safari, tap the Share button, then “Add to Home Screen”. It then opens full screen, like an app, and works without signal.';
+  for (const link of [$('#app-link'), $('#footer-app-link')]) {
+    link.href = appAddress();
+    link.textContent = prettyAddress();
   }
+  $('#install-button').hidden = installed || !installPrompt;
+  $('#install-status').textContent = installed
+    ? 'It’s installed on this phone. Updates arrive by themselves the next time it opens with signal.'
+    : installPrompt ? 'You can install it on this phone:'
+      : ios ? 'To install it, open the address in Safari, tap Share, then “Add to Home Screen”.'
+        : '';
 }
+$('#copy-app-link').addEventListener('click', () => {
+  navigator.clipboard.writeText(appAddress()).then(
+    () => showToast('App address copied'),
+    () => showToast(`The address is ${appAddress()}`),
+  );
+});
+
 $('#install-button').addEventListener('click', async () => {
   if (!installPrompt) return;
   installPrompt.prompt();
@@ -1559,6 +1575,7 @@ function openLinkedTrip() {
 
 store = await openStore();
 db = store.db;
+renderInstall();
 $('#storage-note').textContent = {
   claude: 'Shared live with everyone who has this page.',
   firebase: 'Shared live with everyone who has the trip link.',

@@ -53,9 +53,15 @@ A small web app for tracking shared spending on a trip and working out who owes 
   This works either on GitHub Pages with Firebase (no accounts needed) or as
   a shared claude.ai page.
 
-Amounts are calculated in whole cents, so the results never drift from
-rounding. When an amount doesn't divide evenly, the leftover cents are spread
-one each across the people sharing it.
+Amounts are calculated in whole pennies. Each person's share is added up
+exactly across the whole trip and rounded once at the end, so the odd penny
+from uneven splits doesn't keep landing on the same person: everyone ends
+within a penny of their exact share, and the shares still add up exactly to
+what was spent.
+
+The app's address is shown at the bottom of every screen and on the Trip
+tab ("Get the app"), with install steps, for anyone who installed it and
+has forgotten where it came from. Installed copies update themselves.
 
 ## Hosting on GitHub Pages with Firebase
 

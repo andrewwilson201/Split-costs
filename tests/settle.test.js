@@ -115,3 +115,31 @@ test('repayments settle balances without counting as spending', () => {
   assert.deepEqual(balances.get('a'), { paid: 9000, share: 3000, sent: 0, received: 3000, net: 3000 });
   assert.deepEqual(settleUp(balances), [{ from: 'c', to: 'a', amountCents: 3000 }]);
 });
+
+test('odd pennies are shared fairly across the trip, not always given to the same person', () => {
+  // Thirty £10 bills split three ways: each is 333.33p, so the old rounding
+  // gave the first person 30 extra pennies.
+  const expenses = Array.from({ length: 30 }, () => ({ amountCents: 1000, paidBy: 'c', splitAmong: ['a', 'b', 'c'] }));
+  const balances = computeBalances(people, expenses);
+  const shares = ['a', 'b', 'c'].map((id) => balances.get(id).share);
+  assert.deepEqual(shares, [10000, 10000, 10000]);
+});
+
+test('the Ghent trip: everyone within a penny of an exact third', () => {
+  const trio = [{ id: 'A', name: 'Andrew' }, { id: 'J', name: 'Jim' }, { id: 'M', name: 'Mike' }];
+  const all = ['A', 'J', 'M'];
+  const bills = [['M', 1343], ['A', 9650], ['M', 1370], ['M', 2327], ['M', 6894], ['A', 5170], ['J', 4403], ['J', 1999],
+    ['J', 1120], ['J', 1034], ['J', 21109], ['J', 1447], ['J', 560], ['J', 5514], ['J', 3593], ['J', 13958], ['J', 1343]];
+  const balances = computeBalances(trio, bills.map(([paidBy, amountCents]) => ({ paidBy, amountCents, splitAmong: all })));
+  const shares = all.map((id) => balances.get(id).share);
+  assert.equal(shares.reduce((s, x) => s + x, 0), 82834);
+  for (const sh of shares) assert.ok(Math.abs(sh - 82834 / 3) < 1, `${sh}`);
+  assert.equal(balances.get('A').net, 14820 - shares[0]);
+});
+
+test('exact splits stay exact after trip-level rounding', () => {
+  const balances = computeBalances(people, [
+    { amountCents: 1001, paidBy: 'a', splitAmong: ['a', 'b', 'c'], splitMode: 'exact', splitWeights: { a: 1, b: 500, c: 500 } },
+  ]);
+  assert.deepEqual(['a', 'b', 'c'].map((id) => balances.get(id).share), [1, 500, 500]);
+});

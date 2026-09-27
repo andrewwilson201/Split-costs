@@ -173,11 +173,36 @@ body {
 .stack { display: flex; flex-direction: column; gap: 16px; }
 
 .footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   text-align: center;
   color: var(--on-dark-muted);
   font-size: 0.85rem;
   padding-block: 24px 32px;
 }
+.footer a { color: var(--on-dark); }
+
+.app-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.app-link a { color: var(--accent); }
+.install-help { margin-top: 12px; font-size: 0.9rem; }
+.install-help summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.install-help ul { padding-left: 20px; margin: 10px 0; }
+.install-help li { margin-bottom: 6px; }
+.install-help p { margin: 8px 0 0; color: var(--muted); }
+#install-button { margin-bottom: 4px; }
 
 /* ---------- Hero ---------- */
 

@@ -182,10 +182,24 @@
           </div>
         </section>
 
-        <section id="install-card" class="card" hidden>
-          <h2>Install on your phone</h2>
-          <p id="install-text" class="small muted">Add Split Costs to your home screen. It opens full screen, like an app, and works without signal.</p>
-          <button type="button" id="install-button" hidden>Install app</button>
+        <section id="install-card" class="card">
+          <h2>Get the app</h2>
+          <p class="small muted">Split Costs lives at this web address. Open it on any phone or computer, or send it to someone:</p>
+          <p class="app-link">
+            <a id="app-link" href="./"></a>
+            <button type="button" id="copy-app-link" class="link">Copy</button>
+          </p>
+          <p id="install-status" class="small muted" aria-live="polite"></p>
+          <button type="button" id="install-button" hidden>Install on this phone</button>
+          <details class="install-help">
+            <summary>How to install it on a phone</summary>
+            <ul>
+              <li><strong>Android (Chrome):</strong> open the address above, tap the <strong>⋮</strong> menu, then <strong>Install app</strong> (or <strong>Add to Home screen</strong>).</li>
+              <li><strong>iPhone (Safari):</strong> open the address above, tap the <strong>Share</strong> button, then <strong>Add to Home Screen</strong>.</li>
+            </ul>
+            <p>It then opens from its own icon, full screen, and works without signal. Updates arrive by themselves, so there's no need to reinstall.</p>
+            <p>To join a trip, open its invite link: the “Copy invite link” button at the top of the trip. Each phone remembers the trips it has opened.</p>
+          </details>
         </section>
 
         <section class="card form">
@@ -203,7 +217,10 @@
     </div>
   </main>
 
-  <footer id="storage-note" class="footer"></footer>
+  <footer class="footer">
+    <span id="storage-note"></span>
+    <span class="footer-link">Split Costs · <a id="footer-app-link" href="./"></a></span>
+  </footer>
 
   <button type="button" id="add-expense-fab" class="fab" hidden>
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
