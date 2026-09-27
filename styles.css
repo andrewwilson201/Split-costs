@@ -110,7 +110,7 @@ body {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(6, 12, 16, 0.30) 0%, rgba(6, 12, 16, 0.55) 45%, rgba(6, 12, 16, 0.82) 100%);
+  background: linear-gradient(180deg, rgba(6, 12, 16, 0.25) 0%, rgba(6, 12, 16, 0.35) 45%, rgba(6, 12, 16, 0.55) 100%);
 }
 
 /* ---------- Layout ---------- */
@@ -209,6 +209,23 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* With a trip photo, cards let the photo show through. The blur is kept
+   light so the photo stays recognisable while the text stays readable. */
+body.with-photo .card {
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  -webkit-backdrop-filter: blur(4px) saturate(1.15);
+  backdrop-filter: blur(4px) saturate(1.15);
+}
+body.with-photo .card input,
+body.with-photo .card select,
+body.with-photo .rate-row {
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+}
+body.with-photo .card input:focus,
+body.with-photo .card select:focus {
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+}
+
 /* ---------- Tabs ---------- */
 
 .tabs {
@@ -217,11 +234,11 @@ body {
   gap: 4px;
   padding: 4px;
   margin-bottom: 16px;
-  background: var(--glass);
+  background: rgba(8, 14, 18, 0.5);
   border: 1px solid var(--glass-border);
   border-radius: 14px;
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
   position: sticky;
   top: env(safe-area-inset-top, 0px);
   z-index: 5;
@@ -242,7 +259,7 @@ body {
 .form { display: flex; flex-direction: column; gap: 14px; }
 .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .grow { flex: 1 1 180px; min-width: 0; }
-.date-field { flex: 0 1 11em; min-width: 0; }
+.date-field { flex: 0 1 12em; min-width: 10.5em; }
 .money-row { flex-wrap: nowrap; }
 .money-row .grow { flex: 1 1 0; }
 .currency-field { flex: 0 1 11em; min-width: 0; }

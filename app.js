@@ -871,6 +871,7 @@ function renderBackdrop() {
   const image = key ? `url("${photo.dataUrl}")` : '';
   backdrop.style.backgroundImage = image;
   backdrop.classList.toggle('has-photo', !!key);
+  document.body.classList.toggle('with-photo', !!key);
   preview.style.backgroundImage = image;
   preview.hidden = !key;
   const removeSlot = $('#photo-remove-slot');
