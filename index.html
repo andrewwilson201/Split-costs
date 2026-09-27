@@ -117,7 +117,13 @@
       <!-- Settle up -->
       <div class="tab-panel stack" data-panel="settle">
         <section class="card">
-          <h2>Who pays whom</h2>
+          <div class="card-head">
+            <h2>Who pays whom</h2>
+          </div>
+          <div id="settle-by" class="segmented settle-by" role="radiogroup" aria-label="Settle up" hidden>
+            <button type="button" role="radio" data-by="household">Between households</button>
+            <button type="button" role="radio" data-by="person">Between people</button>
+          </div>
           <p id="settle-warning" class="error" role="status"></p>
           <ul id="payment-list" class="list payments"></ul>
           <div class="card-foot">
@@ -140,6 +146,7 @@
         <section class="card">
           <h2>Who's on the trip?</h2>
           <p id="me-line" class="small muted"></p>
+          <p class="small muted">Couples or families who share money can be put in a household, so they settle up as one.</p>
           <form id="add-person-form" class="row add-person">
             <input id="person-name" type="text" placeholder="Name" maxlength="40" required class="grow" aria-label="Person's name">
             <button type="submit">Add</button>
@@ -268,6 +275,7 @@
             <button type="button" role="radio" data-mode="equal">Equally</button>
             <button type="button" role="radio" data-mode="shares">By shares</button>
             <button type="button" role="radio" data-mode="exact">By amount</button>
+            <button type="button" role="radio" data-mode="households" hidden>Per household</button>
           </div>
           <div id="split-options" class="chips"></div>
           <p id="split-preview" class="small muted"></p>

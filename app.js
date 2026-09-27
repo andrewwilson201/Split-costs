@@ -5,6 +5,7 @@ import {
 } from './currency.js';
 import { openStore } from './store.js';
 import { compressPhoto, isPhotoDataUrl } from './photo.js';
+import { householdsOf, householdBalances, householdWeights, isHouseholdSplit, hasHouseholds, joinNames } from './households.js';
 import { CATEGORIES, categoryLabel, guessCategory, expenseCategory, isCategory, spendingByDay, niceScale } from './categories.js';
 
 // ---------- Per-viewer preferences (which trip / tab is open) ----------
@@ -454,6 +455,52 @@ $('#add-person-form').addEventListener('submit', async (e) => {
 });
 $('#person-name').addEventListener('input', (e) => e.target.setCustomValidity(''));
 
+/** A small dropdown: on their own, or in a household with someone else on the trip. */
+function householdPicker(person) {
+  const units = householdsOf(people);
+  const own = units.find((u) => u.memberIds.includes(person.id));
+  const options = [h('option', { value: '' }, 'Household: on their own')];
+  if (own.memberIds.length > 1) {
+    const others = own.memberIds.filter((id) => id !== person.id).map(personName);
+    options.push(h('option', { value: 'stay', selected: true }, `Household: with ${joinNames(others)}`));
+  }
+  for (const u of units) {
+    if (u === own) continue;
+    options.push(h('option', { value: u.memberIds[0] }, `Household: with ${u.name}`));
+  }
+  const select = h('select', { class: 'household-select', 'aria-label': `${person.name}'s household` }, options);
+  select.addEventListener('change', () => {
+    if (select.value !== 'stay') setHousehold(person, select.value || null);
+  });
+  return select;
+}
+
+/** Put `person` on their own (targetId null) or in the same household as `targetId`. */
+async function setHousehold(person, targetId) {
+  const units = householdsOf(people);
+  const own = units.find((u) => u.memberIds.includes(person.id));
+  const changes = new Map();
+  // Someone left alone in a household of two goes back to being on their own.
+  if (own.memberIds.length === 2) changes.set(own.memberIds.find((id) => id !== person.id), null);
+  if (targetId) {
+    const target = people.find((p) => p.id === targetId);
+    const householdId = target.household || uid();
+    if (target.household !== householdId) changes.set(targetId, householdId);
+    changes.set(person.id, householdId);
+  } else {
+    changes.set(person.id, null);
+  }
+  const col = peopleCol(currentTrip().id);
+  await write(async () => {
+    for (const [id, household] of changes) {
+      const { id: _id, ...data } = people.find((p) => p.id === id);
+      if (household) data.household = household;
+      else delete data.household;
+      await col.doc(id).set(data);
+    }
+  });
+}
+
 const personInUse = (id) => expenses.some((e) => e.paidBy === id || e.splitAmong.includes(id));
 
 function renderPeople() {
@@ -491,7 +538,9 @@ function renderPeople() {
     const inUse = personInUse(p.id);
     return h('li', {},
       avatar(p.id),
-      h('div', { class: 'main title' }, p.name, p.id === meId() ? h('span', { class: 'you' }, 'you') : null),
+      h('div', { class: 'main' },
+        h('div', { class: 'title' }, p.name, p.id === meId() ? h('span', { class: 'you' }, 'you') : null),
+        people.length > 1 ? householdPicker(p) : null),
       h('button', { type: 'button', class: 'quiet', onclick: () => { renamingId = p.id; render(); } }, 'Rename'),
       inUse
         ? h('button', { type: 'button', class: 'quiet', disabled: true, title: 'Remove them from expenses first' }, 'Remove')
@@ -608,7 +657,7 @@ const amountStep = (cur) => (currencyDigits(cur) ? String(10 ** -currencyDigits(
 
 /** Draw the split editor. Kept as-is unless the mode or people change, so typing isn't interrupted. */
 function renderSplitEditor(force = false, selected = null) {
-  const key = `${splitMode}|${people.map((p) => `${p.id}:${p.name}`).join(',')}`;
+  const key = `${splitMode}|${people.map((p) => `${p.id}:${p.name}:${p.household ?? ''}`).join(',')}`;
   if (!force && key === splitKey) return;
   const fresh = splitKey === '';
   const previous = new Set(selectedSplit());
@@ -624,6 +673,13 @@ function renderSplitEditor(force = false, selected = null) {
     if (splitMode === 'equal') {
       box.addEventListener('change', onSplitChange);
       return h('label', { class: 'chip' }, box, p.name);
+    }
+    if (splitMode === 'households') {
+      box.addEventListener('change', onSplitChange);
+      return h('div', { class: 'split-row' },
+        h('label', { class: 'chip' }, box, p.name),
+        h('span', { class: 'small muted' }, householdsOf(people).find((u) => u.memberIds.includes(p.id)).name),
+        h('span', { class: 'split-share', 'data-share-for': p.id }));
     }
     const input = h('input', {
       type: 'number',
@@ -671,6 +727,10 @@ function splitPlan() {
   const total = toMinor($('#expense-amount').value, cur);
   if (ids.length === 0) return { ids, error: 'Choose at least one person to split this between.' };
   if (splitMode === 'equal') return { ids, shares: total > 0 ? splitAmount(total, ids.length) : null };
+  if (splitMode === 'households') {
+    const weights = householdWeights(ids, people);
+    return { ids, weights, shares: total > 0 ? allocate(total, weights) : null };
+  }
   if (splitMode === 'shares') {
     const weights = ids.map((id) => Number(splitValues[id] ?? 1));
     if (weights.some((w) => !(w >= 0))) return { ids, error: 'Shares must be numbers, like 1 or 0.5.' };
@@ -697,7 +757,7 @@ function updateSplitPreview() {
   const preview = $('#split-preview');
   document.querySelectorAll('[data-share-for]').forEach((el) => {
     const i = plan.ids.indexOf(el.dataset.shareFor);
-    el.textContent = splitMode === 'shares' && i >= 0 && plan.shares ? fmt(plan.shares[i]) : '';
+    el.textContent = (splitMode === 'shares' || splitMode === 'households') && i >= 0 && plan.shares ? fmt(plan.shares[i]) : '';
   });
   let text;
   if (plan.error && (splitMode !== 'exact' || total > 0)) text = plan.error;
@@ -706,6 +766,9 @@ function updateSplitPreview() {
     const min = Math.min(...plan.shares);
     const max = Math.max(...plan.shares);
     text = `${plan.ids.length} ${plan.ids.length === 1 ? 'person' : 'people'} · ${min === max ? fmt(min) : `${fmt(min)}–${fmt(max)}`} each`;
+  } else if (splitMode === 'households') {
+    const n = Math.round(plan.weights.reduce((s, w) => s + w, 0));
+    text = `${n} ${n === 1 ? 'household' : 'households'} · ${fmt(Math.round(total / n))} each`;
   } else if (splitMode === 'shares') {
     const n = plan.weights.reduce((s, w) => s + w, 0);
     text = `${formatShareCount(n)} ${n === 1 ? 'share' : 'shares'} in total`;
@@ -742,7 +805,10 @@ function updateQuickSummary() {
   const ids = selectedSplit();
   const everyone = ids.length === people.length && people.length > 1;
   const who = everyone ? 'everyone' : ids.map(personName).join(', ') || 'nobody';
-  const how = { equal: 'split equally between', shares: 'split by shares between', exact: 'split by amount between' }[splitMode];
+  const how = {
+    equal: 'split equally between', shares: 'split by shares between', exact: 'split by amount between',
+    households: 'split per household between',
+  }[splitMode];
   const date = $('#expense-date').value;
   const when = !date || date === today() ? 'today' : longDate(date);
   const parts = [`${personName($('#expense-payer').value)} paid`, `${how} ${who}`, when];
@@ -806,6 +872,9 @@ function renderExpenseForm() {
   if (people.some((p) => p.id === prevPayer)) payerSel.value = prevPayer;
   else if (people.some((p) => p.id === fallback)) payerSel.value = fallback;
 
+  const households = hasHouseholds(people);
+  $('.segmented [data-mode="households"]').hidden = !households;
+  if (splitMode === 'households' && !households) splitMode = 'equal';
   renderSplitEditor();
 
   if (!$('#expense-date').value) $('#expense-date').value = today();
@@ -889,7 +958,8 @@ $('#expense-form').addEventListener('submit', async (e) => {
   const category = $('#expense-category').value;
   if (isCategory(category)) data.category = category;
   if (splitMode !== 'equal') {
-    data.splitMode = splitMode;
+    // A per-household split is stored as shares (e.g. 0.5 each for a couple).
+    data.splitMode = splitMode === 'households' ? 'shares' : splitMode;
     data.splitWeights = Object.fromEntries(plan.ids.map((id, i) => [id, plan.weights[i]]));
   }
   if (currency !== tripCurrency()) {
@@ -946,9 +1016,10 @@ function startEdit(expense) {
   $('#expense-payer').replaceChildren(...people.map((p) => h('option', { value: p.id }, p.name)));
   $('#expense-payer').value = expense.paidBy;
   $('#expense-date').value = expense.date || '';
-  splitMode = expense.splitMode === 'shares' || expense.splitMode === 'exact' ? expense.splitMode : 'equal';
+  splitMode = isHouseholdSplit(expense, people) ? 'households'
+    : expense.splitMode === 'shares' || expense.splitMode === 'exact' ? expense.splitMode : 'equal';
   splitValues = {};
-  if (splitMode !== 'equal') {
+  if (splitMode === 'shares' || splitMode === 'exact') {
     for (const [pid, w] of Object.entries(expense.splitWeights ?? {})) {
       splitValues[pid] = splitMode === 'exact' ? minorToInput(w, cur) : String(w);
     }
@@ -989,7 +1060,8 @@ function renderExpenses() {
     }
     const everyone = people.length > 1 && people.every((p) => e.splitAmong.includes(p.id));
     const splitText = everyone ? 'everyone' : e.splitAmong.map(personName).join(', ');
-    const how = e.splitMode === 'shares' || e.splitMode === 'exact' ? 'split unevenly between' : 'split between';
+    const how = isHouseholdSplit(e, people) ? 'split per household between'
+      : e.splitMode === 'shares' || e.splitMode === 'exact' ? 'split unevenly between' : 'split between';
     const cur = expenseCurrency(e, trip);
     const inTrip = amountInTripCurrency(e, trip);
     const original = formatMoney(e.amountCents, cur);
@@ -1133,8 +1205,40 @@ function renderSpending() {
 
 const shortDate = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
+// ---------- Who settles with whom: people, or households ----------
+
+const settleByHousehold = () => hasHouseholds(people) && (prefs.settleBy?.[currentTrip()?.id] ?? 'household') === 'household';
+
+/** The parties that settle up: households (couples as one) or each person. */
+function settleParties() {
+  return settleByHousehold()
+    ? householdsOf(people)
+    : people.map((p) => ({ id: p.id, memberIds: [p.id], name: p.name }));
+}
+
+function partyAvatar(party, small = false) {
+  if (party.memberIds.length === 1) return avatar(party.memberIds[0], small);
+  return h('span', { class: 'avatar-stack' }, party.memberIds.slice(0, 3).map((id) => avatar(id, small)));
+}
+
+/** Balances and suggested payments for the current way of settling. */
+function settlement() {
+  const { usable, missing } = expensesInTripCurrency();
+  const parties = settleParties();
+  const balances = householdBalances(computeBalances(people, usable), parties);
+  return { parties, balances, payments: settleUp(balances), missing };
+}
+
+document.querySelectorAll('#settle-by button').forEach((b) => {
+  b.addEventListener('click', () => {
+    prefs.settleBy = { ...prefs.settleBy, [currentTrip().id]: b.dataset.by };
+    savePrefs();
+    render();
+  });
+});
+
 /** Record that one person has paid another back. */
-async function recordRepayment(from, to, amountCents) {
+async function recordRepayment(from, to, amountCents, label) {
   const col = expensesCol(currentTrip().id);
   const id = uid();
   const me = meId();
@@ -1143,32 +1247,38 @@ async function recordRepayment(from, to, amountCents) {
     date: today(), createdAt: Date.now(), ...(me ? { createdBy: me } : {}),
   };
   const ok = await write(() => col.doc(id).set(data));
-  if (ok) showToast(`Recorded ${personName(from)} paying ${personName(to)} ${money(amountCents)}`, () => write(() => col.doc(id).delete()));
+  if (ok) showToast(`Recorded ${label ?? `${personName(from)} paying ${personName(to)}`} ${money(amountCents)}`, () => write(() => col.doc(id).delete()));
 }
 
 function renderSettle() {
-  const { usable, missing } = expensesInTripCurrency();
-  const balances = computeBalances(people, usable);
+  const { parties, balances, payments, missing } = settlement();
+  const byHousehold = settleByHousehold();
+  const partyOf = (id) => parties.find((q) => q.id === id);
+  const me = meId();
+  const mine = (party) => !!me && party.memberIds.includes(me);
+
+  $('#settle-by').hidden = !hasHouseholds(people);
+  document.querySelectorAll('#settle-by button').forEach((b) => {
+    b.setAttribute('aria-checked', String((b.dataset.by === 'household') === byHousehold));
+  });
   $('#settle-warning').textContent = missing
     ? `${missing === 1 ? '1 expense is' : `${missing} expenses are`} left out because ${missing === 1 ? 'it has' : 'they have'} no exchange rate into ${tripCurrency()}. Edit ${missing === 1 ? 'it' : 'them'} on the Expenses tab to add one.`
     : '';
-  const payments = settleUp(balances);
-  const me = meId();
 
-  $('#balance-list').replaceChildren(...(people.length ? people.map((p) => {
-    const b = balances.get(p.id);
+  $('#balance-list').replaceChildren(...(people.length ? parties.map((party) => {
+    const b = balances.get(party.id);
     const pill = b.net > 0
-      ? h('span', { class: 'pill positive' }, `gets back ${money(b.net)}`)
+      ? h('span', { class: 'pill positive' }, `${party.memberIds.length > 1 ? 'get' : 'gets'} back ${money(b.net)}`)
       : b.net < 0
-        ? h('span', { class: 'pill negative' }, `owes ${money(-b.net)}`)
+        ? h('span', { class: 'pill negative' }, `${party.memberIds.length > 1 ? 'owe' : 'owes'} ${money(-b.net)}`)
         : h('span', { class: 'pill neutral' }, 'settled');
     const sub = [`Paid ${money(b.paid)}`, `share ${money(b.share)}`];
     if (b.sent) sub.push(`paid back ${money(b.sent)}`);
     if (b.received) sub.push(`got back ${money(b.received)}`);
     return h('li', {},
-      avatar(p.id),
+      partyAvatar(party),
       h('div', { class: 'main' },
-        h('div', { class: 'title' }, p.name, p.id === me ? h('span', { class: 'you' }, 'you') : null),
+        h('div', { class: 'title' }, party.name, mine(party) ? h('span', { class: 'you' }, 'you') : null),
         h('div', { class: 'sub' }, sub.join(' · ')),
       ),
       pill,
@@ -1181,22 +1291,30 @@ function renderSettle() {
     list.replaceChildren(h('li', { class: 'empty-row' },
       bought ? 'Everyone is square. Nothing to pay.' : 'Add some expenses to see who owes whom.'));
   } else {
-    list.replaceChildren(...payments.map((p) =>
-      h('li', { class: p.from === me || p.to === me ? 'mine' : null },
+    list.replaceChildren(...payments.map((pay) => {
+      const from = partyOf(pay.from);
+      const to = partyOf(pay.to);
+      // The repayment is recorded between one member of each; which one doesn't matter.
+      const fromPerson = mine(from) ? me : from.memberIds[0];
+      const toPerson = mine(to) ? me : to.memberIds[0];
+      const verb = from.memberIds.length > 1 ? 'pay' : 'pays';
+      return h('li', { class: mine(from) || mine(to) ? 'mine' : null },
         h('div', { class: 'main' },
           h('div', { class: 'who' },
-            avatar(p.from, true), h('span', {}, personName(p.from)),
-            h('span', { class: 'arrow' }, 'pays'),
-            avatar(p.to, true), h('span', {}, personName(p.to))),
-          confirmButton('Mark as paid', `Confirm ${personName(p.from)} paid`, () => recordRepayment(p.from, p.to, p.amountCents),
+            partyAvatar(from, true), h('span', {}, from.name),
+            h('span', { class: 'arrow' }, verb),
+            partyAvatar(to, true), h('span', {}, to.name)),
+          confirmButton('Mark as paid', `Confirm ${from.name} paid`,
+            () => recordRepayment(fromPerson, toPerson, pay.amountCents, `${from.name} paying ${to.name}`),
             { class: 'link mark-paid' }),
         ),
-        h('div', { class: 'amount' }, money(p.amountCents)),
-      ),
-    ));
+        h('div', { class: 'amount' }, money(pay.amountCents)),
+      );
+    }));
   }
   $('#copy-summary').parentElement.hidden = payments.length === 0;
 
+  const nameOf = (personId) => (byHousehold ? parties.find((q) => q.memberIds.includes(personId))?.name : null) ?? personName(personId);
   const repayments = expenses.filter(isPayment)
     .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
   $('#repayments-card').hidden = repayments.length === 0;
@@ -1204,7 +1322,7 @@ function renderSettle() {
     const inTrip = amountInTripCurrency(r, tripCurrency());
     return h('li', {},
       h('div', { class: 'main' },
-        h('div', { class: 'title' }, `${personName(r.paidBy)} paid ${personName(r.splitAmong[0])}`),
+        h('div', { class: 'title' }, `${nameOf(r.paidBy)} paid ${nameOf(r.splitAmong[0])}`),
         h('div', { class: 'sub' }, r.date ? shortDate(r.date) : ''),
       ),
       h('div', { class: 'amount' }, inTrip == null ? formatMoney(r.amountCents, expenseCurrency(r, tripCurrency())) : money(inTrip)),
@@ -1217,12 +1335,13 @@ function renderSettle() {
 $('#copy-summary').addEventListener('click', () => {
   const trip = currentTrip();
   const { usable } = expensesInTripCurrency();
-  const payments = settleUp(computeBalances(people, usable));
+  const { parties, payments } = settlement();
+  const nameOf = (id) => parties.find((q) => q.id === id)?.name ?? '';
   const total = usable.filter((e) => !isPayment(e)).reduce((s, e) => s + e.amountCents, 0);
   const text = [
     `${trip.name || 'Trip'}: total spent ${money(total)}`,
     '',
-    ...payments.map((p) => `${personName(p.from)} pays ${personName(p.to)} ${money(p.amountCents)}`),
+    ...payments.map((p) => `${nameOf(p.from)} ${parties.find((q) => q.id === p.from)?.memberIds.length > 1 ? 'pay' : 'pays'} ${nameOf(p.to)} ${money(p.amountCents)}`),
   ].join('\n');
   const status = $('#copy-status');
   navigator.clipboard.writeText(text).then(
@@ -1355,9 +1474,15 @@ function renderHero(trip) {
   const heroMe = $('#hero-me');
   heroMe.hidden = !me || !bought.length;
   if (me && bought.length) {
-    const net = computeBalances(people, usable).get(me)?.net ?? 0;
+    const { parties, balances } = settlement();
+    const party = parties.find((q) => q.memberIds.includes(me));
+    const net = balances.get(party.id)?.net ?? 0;
+    const who = party.memberIds.length > 1 ? 'Your household' : 'You';
+    const is = party.memberIds.length > 1 ? 'is' : 'are';
     heroMe.className = `hero-me ${net > 0 ? 'positive' : net < 0 ? 'negative' : ''}`;
-    heroMe.textContent = net > 0 ? `You’re owed ${money(net)}` : net < 0 ? `You owe ${money(-net)}` : 'You’re all square';
+    heroMe.textContent = net > 0 ? `${who} ${is} owed ${money(net)}`
+      : net < 0 ? `${who} ${party.memberIds.length > 1 ? 'owes' : 'owe'} ${money(-net)}`
+        : `${who} ${is} all square`;
   }
   $('#photo-button-label').textContent = photo ? 'Change photo' : 'Add cover photo';
 }

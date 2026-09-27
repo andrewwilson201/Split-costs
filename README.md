@@ -39,6 +39,11 @@ A small web app for tracking shared spending on a trip and working out who owes 
 - **Install as an app**: on Android, "Install app" on the Trip tab (or
   Chrome's menu) adds it to the home screen. On iPhone use Share → Add to
   Home Screen. It opens full screen and works without signal.
+- **Households**: couples or families can be grouped on the Trip tab. Everyone
+  still enters their own expenses, but Settle up works between households
+  ("Mike & Jo pay Jim & Kate"), so partners never pay each other. It can be
+  switched back to settling between people. "Per household" splits an
+  expense so each household pays an equal part, whatever its size.
 - **Settle up**: shows what each person paid, their fair share and their
   balance, then lists the fewest payments needed to even everything out
   (at most *n − 1* payments for *n* people). Use "Copy summary" to paste it

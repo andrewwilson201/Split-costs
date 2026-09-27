@@ -34,7 +34,7 @@ jobs:
       - name: Collect site files
         run: |
           mkdir _site
-          cp -r index.html styles.css app.js settle.js store.js currency.js photo.js categories.js firebase-config.js \
+          cp -r index.html styles.css app.js settle.js store.js currency.js photo.js categories.js households.js firebase-config.js \
             manifest.webmanifest sw.js icons vendor _site/
 
       - uses: actions/configure-pages@v5

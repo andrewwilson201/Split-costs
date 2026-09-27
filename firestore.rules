@@ -22,10 +22,12 @@ service cloud.firestore {
         && d.createdAt is number;
     }
 
+    // `household` groups people who settle up together (e.g. a couple).
     function validPerson(d) {
-      return d.keys().hasOnly(['name', 'createdAt'])
+      return d.keys().hasOnly(['name', 'createdAt', 'household'])
         && isShortString(d.name, 1, 40)
-        && d.createdAt is number;
+        && d.createdAt is number
+        && (!('household' in d) || isShortString(d.household, 1, 64));
     }
 
     function isCurrencyCode(value) {

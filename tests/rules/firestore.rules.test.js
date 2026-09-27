@@ -122,6 +122,14 @@ test('repayments, uneven splits and authors are accepted when well formed', asyn
   await assertFails(setDoc(ref, { ...expense, createdBy: '' }));
 });
 
+test('people can be put in a household', async () => {
+  await setDoc(doc(db, 'trips', TRIP), trip);
+  const ref = doc(db, 'trips', TRIP, 'people', 'p1');
+  await assertSucceeds(setDoc(ref, { ...person, household: 'b6f7a0de-1111-4f5e-9a8d-7c6b5a4e3d2f' }));
+  await assertFails(setDoc(ref, { ...person, household: '' }));
+  await assertFails(setDoc(ref, { ...person, household: 5 }));
+});
+
 test('other collections are closed', async () => {
   await assertFails(setDoc(doc(db, 'other', 'x'), { a: 1 }));
 });
