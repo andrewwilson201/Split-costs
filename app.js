@@ -1,4 +1,8 @@
-import { toCents, formatCents, splitAmount, computeBalances, settleUp } from './settle.js';
+import { splitAmount, computeBalances, settleUp } from './settle.js';
+import {
+  CURRENCY_GROUPS, DEFAULT_CURRENCY, currencyName, normalizeCurrency, currencyDigits, toMinor, minorToInput,
+  formatMoney, convertMinor, expenseCurrency, amountInTripCurrency, formatRate, fetchRate,
+} from './currency.js';
 import { openStore } from './store.js';
 
 // ---------- Per-viewer preferences (which trip / tab is open) ----------
@@ -36,12 +40,27 @@ const docsOf = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 // The chosen trip, or the first one while it loads or if it was deleted.
 const currentTrip = () => trips.find((t) => t.id === prefs.tripId) || trips[0] || null;
 const personName = (id) => people.find((p) => p.id === id)?.name ?? 'Someone removed';
-const money = (cents) => formatCents(cents, currentTrip()?.currency ?? '');
+const tripCurrency = () => normalizeCurrency(currentTrip()?.currency);
+const money = (minor) => formatMoney(minor, tripCurrency());
 const uid = () => crypto.randomUUID();
 const today = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
+const longDate = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+
+/** Expenses with amounts converted to the trip currency, and how many have no usable rate. */
+function expensesInTripCurrency() {
+  const cur = tripCurrency();
+  const usable = [];
+  let missing = 0;
+  for (const e of expenses) {
+    const amount = amountInTripCurrency(e, cur);
+    if (amount == null) missing++;
+    else usable.push({ ...e, amountCents: amount });
+  }
+  return { usable, missing };
+}
 
 const tripDoc = (id) => db.doc(`trips/${id}`);
 const peopleCol = (tripId) => db.collection(`trips/${tripId}/people`);
@@ -155,7 +174,7 @@ async function createTrip() {
   const id = uid();
   const ok = await write(() => tripDoc(id).set({
     name: `Trip ${trips.length + 1}`,
-    currency: '$',
+    currency: trips.length ? normalizeCurrency(trips[trips.length - 1].currency) : DEFAULT_CURRENCY,
     createdAt: Date.now(),
   }));
   if (!ok) return;
@@ -172,13 +191,14 @@ $('#new-trip').addEventListener('click', createTrip);
 $('#new-trip-empty').addEventListener('click', createTrip);
 
 $('#trip-select').addEventListener('change', (e) => {
+  cancelCurrencyChange();
   resetExpenseForm();
   prefs.tripId = e.target.value;
   savePrefs();
   render();
 });
 
-// Trip name / currency save after a short pause in typing.
+// The trip name saves after a short pause in typing.
 const pending = {};
 function saveTripField(field, value) {
   const trip = currentTrip();
@@ -187,7 +207,91 @@ function saveTripField(field, value) {
   pending[field] = setTimeout(() => write(() => tripDoc(trip.id).update({ [field]: value })), 500);
 }
 $('#trip-name').addEventListener('input', (e) => saveTripField('name', e.target.value.trim()));
-$('#trip-currency').addEventListener('input', (e) => saveTripField('currency', e.target.value.trim()));
+
+// ---------- Main currency ----------
+
+function fillCurrencySelect(select) {
+  select.replaceChildren(...CURRENCY_GROUPS.map((g) =>
+    h('optgroup', { label: g.label }, g.codes.map((c) => h('option', { value: c }, `${c} · ${currencyName(c)}`)))));
+}
+fillCurrencySelect($('#trip-currency'));
+fillCurrencySelect($('#expense-currency'));
+
+let pendingCurrency = null;
+
+$('#trip-currency').addEventListener('change', (e) => {
+  const from = tripCurrency();
+  const to = e.target.value;
+  if (to === from) return cancelCurrencyChange();
+  // Expenses not already in the new currency need a rate into it. Older
+  // expenses without a currency are in the current one.
+  const toConvert = expenses.filter((x) => expenseCurrency(x, from) !== to).length;
+  if (toConvert === 0) {
+    write(() => tripDoc(currentTrip().id).update({ currency: to }));
+    return;
+  }
+  pendingCurrency = to;
+  const n = toConvert === 1 ? '1 expense' : `${toConvert} expenses`;
+  $('#currency-change-text').textContent =
+    `Change the main currency to ${to}? ${n} not paid in ${to} will be converted at the market rate for the day they were paid. ` +
+    `Rates entered by hand are kept, and converted from ${from} to ${to} at that day's market rate.`;
+  $('#currency-change').hidden = false;
+});
+
+function cancelCurrencyChange() {
+  pendingCurrency = null;
+  $('#currency-change').hidden = true;
+  if (currentTrip()) $('#trip-currency').value = tripCurrency();
+}
+$('#currency-change-cancel').addEventListener('click', cancelCurrencyChange);
+
+$('#currency-change-confirm').addEventListener('click', async () => {
+  const trip = currentTrip();
+  const from = tripCurrency();
+  const to = pendingCurrency;
+  const btn = $('#currency-change-confirm');
+  btn.disabled = true;
+  btn.textContent = 'Getting rates…';
+  try {
+    const opts = { today: today() };
+    const updates = await Promise.all(expenses.map(async (x) => {
+      const cur = expenseCurrency(x, from);
+      const day = x.date || today();
+      if (cur === to) return x.currency ? null : [x.id, { currency: cur }];
+      const hasOldRate = x.rateTo === from && x.rate > 0;
+      // Keep a hand-entered rate by going through the old main currency.
+      const viaOld = async () => {
+        const step = await fetchRate(from, to, day, opts);
+        return { rate: x.rate * step.rate, rateDate: step.date };
+      };
+      let result;
+      if (hasOldRate && x.rateSource === 'manual') {
+        result = { ...(await viaOld()), rateSource: 'manual' };
+      } else {
+        try {
+          const direct = await fetchRate(cur, to, day, opts);
+          result = { rate: direct.rate, rateDate: direct.date, rateSource: 'market' };
+        } catch (e) {
+          if (!hasOldRate) throw e;
+          result = { ...(await viaOld()), rateSource: x.rateSource === 'manual' ? 'manual' : 'market' };
+        }
+      }
+      return [x.id, { currency: cur, rateTo: to, ...result }];
+    }));
+    const col = expensesCol(trip.id);
+    await write(async () => {
+      for (const [id, data] of updates.filter(Boolean)) await col.doc(id).update(data);
+      await tripDoc(trip.id).update({ currency: to });
+    });
+  } catch {
+    showNotice("Couldn't get exchange rates, so the currency wasn't changed. Check your connection and try again.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Change currency';
+    cancelCurrencyChange();
+    render();
+  }
+});
 
 async function deleteTrip(trip) {
   resetExpenseForm();
@@ -282,6 +386,91 @@ function renderPeople() {
 
 let editingId = null;
 let knownSplitIds = new Set(); // people added after the form was drawn start out ticked
+let currencyChosen = false; // whether the form's currency has been set since it was last reset
+
+// The exchange rate for the expense being entered, when it's in another currency.
+const emptyRate = () => ({ source: 'market', rate: null, date: null, from: null, to: null, loading: false, failed: false });
+let rateState = emptyRate();
+let rateRequest = 0;
+
+const formCurrency = () => $('#expense-currency').value || tripCurrency();
+
+function defaultExpenseCurrency() {
+  const last = prefs.expenseCurrency?.[currentTrip()?.id];
+  return last && CURRENCY_GROUPS.some((g) => g.codes.includes(last)) ? last : tripCurrency();
+}
+
+/** Look up the market rate for the form's currency and date, unless a rate was typed in. */
+async function refreshRate() {
+  const from = formCurrency();
+  const to = tripCurrency();
+  if (from === to) {
+    rateState = { ...emptyRate(), from, to };
+    updateRateUI();
+    return;
+  }
+  if (rateState.source === 'manual' && rateState.from === from && rateState.to === to) return;
+  const request = ++rateRequest;
+  rateState = { ...emptyRate(), from, to, loading: true };
+  updateRateUI();
+  try {
+    const { rate, date } = await fetchRate(from, to, $('#expense-date').value || today(), { today: today() });
+    if (request !== rateRequest) return;
+    rateState = { ...rateState, rate, date, loading: false };
+  } catch {
+    if (request !== rateRequest) return;
+    rateState = { ...rateState, loading: false, failed: true };
+  }
+  updateRateUI();
+  updateSplitPreview();
+}
+
+function updateRateUI() {
+  const from = formCurrency();
+  const to = tripCurrency();
+  $('#expense-amount').step = currencyDigits(from) ? String(10 ** -currencyDigits(from)) : '1';
+  $('#expense-amount').placeholder = minorToInput(0, from);
+  const foreign = from !== to;
+  $('#rate-row').hidden = !foreign;
+  if (!foreign) return;
+
+  $('#rate-from').textContent = `1 ${from} =`;
+  $('#rate-to').textContent = to;
+  const input = $('#expense-rate');
+  if (document.activeElement !== input) input.value = rateState.rate > 0 ? formatRate(rateState.rate) : '';
+  let note = '';
+  if (rateState.loading) note = 'Getting the market rate…';
+  else if (rateState.source === 'manual') note = 'Rate entered by hand.';
+  else if (rateState.failed) note = "Couldn't get the market rate. Enter the rate yourself.";
+  else if (rateState.date) note = `Market rate for ${longDate(rateState.date)}. You can change it.`;
+  $('#rate-note').textContent = note;
+  $('#rate-reset').hidden = rateState.source !== 'manual';
+}
+
+$('#expense-currency').addEventListener('change', (e) => {
+  const tripId = currentTrip()?.id;
+  if (tripId) {
+    prefs.expenseCurrency = { ...prefs.expenseCurrency, [tripId]: e.target.value };
+    savePrefs();
+  }
+  rateState = emptyRate();
+  refreshRate();
+  updateSplitPreview();
+});
+$('#expense-date').addEventListener('change', () => {
+  if (rateState.source === 'market') refreshRate();
+});
+$('#expense-rate').addEventListener('input', (e) => {
+  const rate = Number(e.target.value);
+  rateRequest++; // ignore any lookup still in flight
+  rateState = { ...rateState, source: 'manual', rate: rate > 0 ? rate : null, loading: false, failed: false };
+  updateRateUI();
+  updateSplitPreview();
+});
+$('#rate-reset').addEventListener('click', () => {
+  rateState = emptyRate();
+  refreshRate();
+});
 
 function selectedSplit() {
   return [...document.querySelectorAll('#split-options input:checked')].map((i) => i.value);
@@ -320,6 +509,17 @@ function renderExpenseForm() {
   knownSplitIds = new Set(people.map((p) => p.id));
 
   if (!$('#expense-date').value) $('#expense-date').value = today();
+  if (!currencyChosen) {
+    $('#expense-currency').value = defaultExpenseCurrency();
+    currencyChosen = true;
+  }
+  // Look the rate up again if the currency or the trip's main currency changed.
+  if (!rateState.loading && (rateState.from !== formCurrency() || rateState.to !== tripCurrency())) {
+    if (rateState.source === 'manual') rateState = emptyRate();
+    refreshRate();
+  } else {
+    updateRateUI();
+  }
   $('#expense-form-title').textContent = editingId ? 'Edit expense' : 'Add an expense';
   $('#expense-submit').textContent = editingId ? 'Save changes' : 'Add expense';
   $('#cancel-edit').hidden = !editingId;
@@ -328,16 +528,22 @@ function renderExpenseForm() {
 
 function updateSplitPreview() {
   const ids = selectedSplit();
-  const cents = toCents($('#expense-amount').value);
+  const cur = formCurrency();
+  const minor = toMinor($('#expense-amount').value, cur);
   const preview = $('#split-preview');
   const count = `${ids.length} ${ids.length === 1 ? 'person' : 'people'}`;
+  const fmt = (m) => formatMoney(m, cur);
   if (ids.length === 0) {
     preview.textContent = 'Select at least one person.';
-  } else if (cents > 0) {
-    const shares = splitAmount(cents, ids.length);
+  } else if (minor > 0) {
+    const shares = splitAmount(minor, ids.length);
     const min = Math.min(...shares);
     const max = Math.max(...shares);
-    preview.textContent = `${count} · ${min === max ? money(min) : `${money(min)}–${money(max)}`} each`;
+    let text = `${count} · ${min === max ? fmt(min) : `${fmt(min)}–${fmt(max)}`} each`;
+    if (cur !== tripCurrency() && rateState.rate > 0) {
+      text += ` · ${fmt(minor)} is ${money(convertMinor(minor, cur, tripCurrency(), rateState.rate))}`;
+    }
+    preview.textContent = text;
   } else {
     preview.textContent = `${count} selected`;
   }
@@ -356,6 +562,9 @@ function resetExpenseForm() {
   const payer = $('#expense-payer').value;
   $('#expense-form').reset();
   $('#expense-payer').value = payer; // the same person often pays several times in a row
+  currencyChosen = false;
+  rateRequest++;
+  rateState = emptyRate();
   $('#expense-error').textContent = '';
   $('#split-options').replaceChildren();
   knownSplitIds = new Set();
@@ -369,7 +578,8 @@ $('#cancel-edit').addEventListener('click', () => {
 $('#expense-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const description = $('#expense-desc').value.trim();
-  const amountCents = toCents($('#expense-amount').value);
+  const currency = formCurrency();
+  const amountCents = toMinor($('#expense-amount').value, currency);
   const paidBy = $('#expense-payer').value;
   const splitAmong = selectedSplit();
   const date = $('#expense-date').value || today();
@@ -378,14 +588,29 @@ $('#expense-form').addEventListener('submit', async (e) => {
   if (!description) return void (error.textContent = 'Enter a description.');
   if (!(amountCents > 0)) return void (error.textContent = 'Enter an amount greater than zero.');
   if (splitAmong.length === 0) return void (error.textContent = 'Choose at least one person to split this between.');
+  // Expenses in the main currency don't store one, like expenses from before
+  // currencies were added.
+  const data = { description, amountCents, paidBy, splitAmong, date };
+  if (currency !== tripCurrency()) {
+    data.currency = currency;
+    if (rateState.loading) return void (error.textContent = 'Still getting the exchange rate. Try again in a moment.');
+    if (!(rateState.rate > 0)) return void (error.textContent = `Enter the exchange rate from ${currency} to ${tripCurrency()}.`);
+    Object.assign(data, {
+      rate: rateState.rate,
+      rateTo: tripCurrency(),
+      rateSource: rateState.source,
+      rateDate: rateState.source === 'market' && rateState.date ? rateState.date : date,
+    });
+  }
   error.textContent = '';
 
-  const data = { description, amountCents, paidBy, splitAmong, date };
   const col = expensesCol(currentTrip().id);
   const id = editingId;
   const submit = $('#expense-submit');
   submit.disabled = true;
-  const ok = await write(() => (id ? col.doc(id).update(data) : col.doc(uid()).set({ ...data, createdAt: Date.now() })));
+  // Save the whole expense so fields from its old currency don't linger.
+  const createdAt = (id && expenses.find((x) => x.id === id)?.createdAt) || Date.now();
+  const ok = await write(() => col.doc(id || uid()).set({ ...data, createdAt }));
   submit.disabled = false;
   if (!ok) return;
   resetExpenseForm();
@@ -395,8 +620,16 @@ $('#expense-form').addEventListener('submit', async (e) => {
 
 function startEdit(expense) {
   editingId = expense.id;
+  const trip = tripCurrency();
+  const cur = expenseCurrency(expense, trip);
+  $('#expense-currency').value = cur;
+  currencyChosen = true;
+  rateRequest++;
+  rateState = cur !== trip && expense.rateTo === trip && expense.rate > 0
+    ? { ...emptyRate(), source: expense.rateSource === 'manual' ? 'manual' : 'market', rate: expense.rate, date: expense.rateDate, from: cur, to: trip }
+    : emptyRate();
   $('#expense-desc').value = expense.description;
-  $('#expense-amount').value = (expense.amountCents / 100).toFixed(2);
+  $('#expense-amount').value = minorToInput(expense.amountCents, cur);
   $('#expense-payer').value = expense.paidBy;
   $('#expense-date').value = expense.date || '';
   document.querySelectorAll('#split-options input').forEach((i) => {
@@ -409,7 +642,9 @@ function startEdit(expense) {
 
 function renderExpenses() {
   const list = $('#expense-list');
-  const total = expenses.reduce((s, e) => s + e.amountCents, 0);
+  const trip = tripCurrency();
+  const { usable } = expensesInTripCurrency();
+  const total = usable.reduce((s, e) => s + e.amountCents, 0);
   $('#expense-total').textContent = expenses.length ? `· ${money(total)} total` : '';
 
   if (expenses.length === 0) {
@@ -422,13 +657,22 @@ function renderExpenses() {
   list.replaceChildren(...sorted.map((e) => {
     const everyone = people.length > 1 && people.every((p) => e.splitAmong.includes(p.id));
     const splitText = everyone ? 'everyone' : e.splitAmong.map(personName).join(', ');
+    const cur = expenseCurrency(e, trip);
+    const inTrip = amountInTripCurrency(e, trip);
+    const original = formatMoney(e.amountCents, cur);
+    const paid = cur === trip ? 'paid' : inTrip == null ? `paid ${original}` : `paid ${original} at ${formatRate(e.rate)}`;
     return h('li', { class: e.id === editingId ? 'editing' : null },
       h('div', { class: 'main' },
         h('div', { class: 'title' }, e.description),
         h('div', { class: 'muted small' },
-          `${personName(e.paidBy)} paid · split between ${splitText}${e.date ? ` · ${e.date}` : ''}`),
+          `${personName(e.paidBy)} ${paid} · split between ${splitText}${e.date ? ` · ${e.date}` : ''}`),
+        inTrip == null
+          ? h('div', { class: 'small needs-rate' }, `No exchange rate into ${trip}. Tap Edit to add one.`)
+          : null,
       ),
-      h('div', { class: 'amount' }, money(e.amountCents)),
+      inTrip == null
+        ? h('div', { class: 'amount needs-rate' }, original)
+        : h('div', { class: 'amount' }, money(inTrip)),
       h('button', { type: 'button', class: 'icon', onclick: () => startEdit(e) }, 'Edit'),
       confirmButton('Delete', 'Tap to confirm', async () => {
         if (editingId === e.id) resetExpenseForm();
@@ -441,7 +685,11 @@ function renderExpenses() {
 // ---------- Settle up ----------
 
 function renderSettle() {
-  const balances = computeBalances(people, expenses);
+  const { usable, missing } = expensesInTripCurrency();
+  const balances = computeBalances(people, usable);
+  $('#settle-warning').textContent = missing
+    ? `${missing === 1 ? '1 expense is' : `${missing} expenses are`} left out because ${missing === 1 ? 'it has' : 'they have'} no exchange rate into ${tripCurrency()}. Edit ${missing === 1 ? 'it' : 'them'} on the Expenses tab to add one.`
+    : '';
   const payments = settleUp(balances);
 
   const rows = people.map((p) => {
@@ -480,8 +728,9 @@ function renderSettle() {
 
 $('#copy-summary').addEventListener('click', () => {
   const trip = currentTrip();
-  const payments = settleUp(computeBalances(people, expenses));
-  const total = expenses.reduce((s, e) => s + e.amountCents, 0);
+  const { usable } = expensesInTripCurrency();
+  const payments = settleUp(computeBalances(people, usable));
+  const total = usable.reduce((s, e) => s + e.amountCents, 0);
   const text = [
     `${trip.name || 'Trip'}: total spent ${money(total)}`,
     '',
@@ -520,7 +769,7 @@ function render() {
   }
 
   if (document.activeElement !== $('#trip-name')) $('#trip-name').value = trip.name;
-  if (document.activeElement !== $('#trip-currency')) $('#trip-currency').value = trip.currency;
+  if (!pendingCurrency) $('#trip-currency').value = tripCurrency();
 
   document.querySelectorAll('.tabs button').forEach((b) => {
     b.setAttribute('aria-selected', String(b.dataset.tab === prefs.tab));

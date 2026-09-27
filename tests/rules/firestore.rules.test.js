@@ -76,6 +76,19 @@ test('bad expenses are refused', async () => {
   await assertFails(setDoc(doc(db, 'trips', TRIP, 'people', 'p1'), { name: '', createdAt: 1 }));
 });
 
+test('expenses in another currency need valid rate fields', async () => {
+  await setDoc(doc(db, 'trips', TRIP), { ...trip, currency: 'GBP' });
+  const ref = doc(db, 'trips', TRIP, 'expenses', 'e1');
+  const foreign = { ...expense, currency: 'EUR', rate: 0.8598, rateTo: 'GBP', rateSource: 'market', rateDate: '2026-09-27' };
+  await assertSucceeds(setDoc(ref, foreign));
+  await assertSucceeds(updateDoc(ref, { rate: 0.86, rateSource: 'manual' }));
+  await assertFails(setDoc(ref, { ...foreign, currency: 'euro' }));
+  await assertFails(setDoc(ref, { ...foreign, rate: 0 }));
+  await assertFails(setDoc(ref, { ...foreign, rate: '0.86' }));
+  await assertFails(setDoc(ref, { ...foreign, rateSource: 'guess' }));
+  await assertFails(setDoc(ref, { ...foreign, rateTo: 'gbp' }));
+});
+
 test('other collections are closed', async () => {
   await assertFails(setDoc(doc(db, 'other', 'x'), { a: 1 }));
 });

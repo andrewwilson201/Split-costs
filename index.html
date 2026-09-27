@@ -33,9 +33,16 @@
           <label class="grow">Trip name
             <input id="trip-name" type="text" maxlength="60">
           </label>
-          <label class="narrow">Currency
-            <input id="trip-currency" type="text" maxlength="4">
+          <label class="narrow">Main currency
+            <select id="trip-currency"></select>
           </label>
+        </div>
+        <div id="currency-change" class="confirm-panel" hidden>
+          <p id="currency-change-text"></p>
+          <div class="row end">
+            <button type="button" id="currency-change-cancel" class="secondary">Cancel</button>
+            <button type="button" id="currency-change-confirm">Change currency</button>
+          </div>
         </div>
         <div id="invite" class="invite" hidden>
           <button type="button" id="copy-link" class="secondary">Copy invite link</button>
@@ -69,9 +76,25 @@
             <label class="grow">What was it?
               <input id="expense-desc" type="text" placeholder="e.g. Dinner, fuel, hotel" maxlength="80" required>
             </label>
-            <label class="narrow">Amount
-              <input id="expense-amount" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0.00" required>
+          </div>
+          <div class="row money-row">
+            <label class="grow">Amount
+              <input id="expense-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" required>
             </label>
+            <label class="currency-field">Currency
+              <select id="expense-currency"></select>
+            </label>
+          </div>
+          <div id="rate-row" class="rate-row" hidden>
+            <label for="expense-rate" class="rate-line">
+              <span id="rate-from"></span>
+              <input id="expense-rate" type="number" inputmode="decimal" min="0" step="any" aria-describedby="rate-note">
+              <span id="rate-to"></span>
+            </label>
+            <p class="muted small">
+              <span id="rate-note" aria-live="polite"></span>
+              <button type="button" class="link" id="rate-reset" hidden>Use market rate</button>
+            </p>
           </div>
           <div class="row">
             <label class="grow">Paid by
@@ -114,6 +137,7 @@
           </table>
         </div>
 
+        <p id="settle-warning" class="error" role="status"></p>
         <h2 class="spaced">Who pays whom</h2>
         <ul id="payment-list" class="list"></ul>
         <button type="button" id="copy-summary" class="secondary">Copy summary</button>

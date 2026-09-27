@@ -28,8 +28,24 @@ service cloud.firestore {
         && d.createdAt is number;
     }
 
+    function isCurrencyCode(value) {
+      return value is string && value.matches('^[A-Z]{3}$');
+    }
+
+    // Optional currency fields. An expense in another currency than its trip
+    // stores the rate into the trip's currency (1 unit of `currency` = `rate` units of `rateTo`).
+    function validExpenseCurrency(d) {
+      return (!('currency' in d) || isCurrencyCode(d.currency))
+        && (!('rateTo' in d) || isCurrencyCode(d.rateTo))
+        && (!('rate' in d) || (d.rate is number && d.rate > 0 && d.rate < 1000000000))
+        && (!('rateSource' in d) || d.rateSource in ['market', 'manual'])
+        && (!('rateDate' in d) || isShortString(d.rateDate, 0, 10));
+    }
+
     function validExpense(d) {
-      return d.keys().hasOnly(['description', 'amountCents', 'paidBy', 'splitAmong', 'date', 'createdAt'])
+      return d.keys().hasOnly(['description', 'amountCents', 'paidBy', 'splitAmong', 'date', 'createdAt',
+                               'currency', 'rate', 'rateTo', 'rateSource', 'rateDate'])
+        && validExpenseCurrency(d)
         && isShortString(d.description, 1, 80)
         && d.amountCents is int && d.amountCents > 0 && d.amountCents < 10000000000
         && isShortString(d.paidBy, 1, 64)

@@ -9,6 +9,12 @@ A small web app for tracking shared spending on a trip and working out who owes 
 - **Expenses**: record what it was, the amount, who paid, the date, and
   **which people it is split between**. Tick only the people who shared it,
   e.g. a taxi that only two people took. Expenses can be edited or deleted.
+- **Currencies**: each trip has a main currency, and each expense can be in
+  any currency. Expenses in another currency are converted at the market
+  rate for the day they were paid, which is filled in automatically and can
+  be edited. Balances and payments are shown in the main currency. Changing
+  the main currency converts existing expenses; rates entered by hand are
+  kept and converted through the old main currency.
 - **Settle up**: shows what each person paid, their fair share and their
   balance, then lists the fewest payments needed to even everything out
   (at most *n − 1* payments for *n* people). Use "Copy summary" to paste it
@@ -37,6 +43,7 @@ like a shared password and only send it to people on the trip.
    database**. Pick a location near you and start in **production mode**.
 3. Open the **Rules** tab, replace everything with the contents of
    [`firestore.rules`](firestore.rules), and click **Publish**.
+   Do this again whenever `firestore.rules` changes.
 4. Go to **Project settings** (the gear icon) → **Your apps** and click the
    **Web** icon (`</>`). Register the app with any nickname. Firebase Hosting
    isn't needed.
@@ -61,6 +68,11 @@ Open the site, create a trip, and tap **Copy invite link**. Send the link to
 everyone on the trip. Each phone remembers the trips it has opened, so after
 the first visit the plain site address works too. The address bar always
 shows the current trip's link.
+
+Exchange rates are daily mid-market rates from the free
+[currency-api](https://github.com/fawazahmed0/exchange-api) project, fetched
+from jsDelivr with a Cloudflare Pages mirror as backup. If neither can be
+reached, the app asks for the rate to be entered by hand.
 
 The app keeps a copy of the data on each phone, so expenses added without
 signal appear straight away and sync once the phone is back online.
