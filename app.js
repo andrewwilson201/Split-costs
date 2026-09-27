@@ -1,4 +1,4 @@
-import { splitAmount, computeBalances, settleUp } from './settle.js';
+import { splitAmount, allocate, isPayment, computeBalances, settleUp } from './settle.js';
 import {
   CURRENCY_GROUPS, DEFAULT_CURRENCY, currencyName, normalizeCurrency, currencyDigits, toMinor, minorToInput,
   formatMoney, convertMinor, expenseCurrency, amountInTripCurrency, formatRate, fetchRate,
@@ -219,6 +219,7 @@ $('#new-trip-empty').addEventListener('click', createTrip);
 
 $('#trip-select').addEventListener('change', (e) => {
   cancelCurrencyChange();
+  closeExpenseSheet();
   resetExpenseForm();
   prefs.tripId = e.target.value;
   savePrefs();
@@ -355,6 +356,84 @@ document.querySelectorAll('.tabs button').forEach((btn) => {
   });
 });
 
+// ---------- Undo ----------
+
+let toastTimer = null;
+let toastUndo = null;
+
+/** A short message at the bottom of the screen, with an Undo button when `undo` is given. */
+function showToast(text, undo = null) {
+  $('#toast-text').textContent = text;
+  $('#toast-undo').hidden = !undo;
+  toastUndo = undo;
+  $('#toast').hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 7000);
+}
+function hideToast() {
+  $('#toast').hidden = true;
+  toastUndo = null;
+}
+$('#toast-undo').addEventListener('click', async () => {
+  const undo = toastUndo;
+  hideToast();
+  if (undo) await undo();
+});
+
+/** Put back a document exactly as it was, under its old id. */
+function restoreDoc(col, item) {
+  const { id, ...data } = item;
+  return write(() => col.doc(id).set(data));
+}
+
+async function deleteWithUndo(col, item, message) {
+  const ok = await write(() => col.doc(item.id).delete());
+  if (ok) showToast(message, () => restoreDoc(col, item));
+}
+
+// ---------- Who's who on this phone ----------
+
+/** The person this phone belongs to on the open trip, if they've said. */
+function meId() {
+  const id = prefs.me?.[currentTrip()?.id];
+  return people.some((p) => p.id === id) ? id : null;
+}
+
+function setMe(id) {
+  const tripId = currentTrip().id;
+  prefs.me = { ...prefs.me, [tripId]: id };
+  prefs.notOnTrip = { ...prefs.notOnTrip, [tripId]: false };
+  savePrefs();
+  if (id) $('#expense-payer').value = id;
+  render();
+}
+
+$('#whoami-skip').addEventListener('click', () => {
+  prefs.notOnTrip = { ...prefs.notOnTrip, [currentTrip().id]: true };
+  savePrefs();
+  render();
+});
+
+function renderWhoAmI(trip) {
+  const me = meId();
+  const ask = people.length > 0 && !me && !prefs.notOnTrip?.[trip.id];
+  $('#whoami').hidden = !ask;
+  if (ask) {
+    $('#whoami-options').replaceChildren(...people.map((p) =>
+      h('button', { type: 'button', class: 'person-chip', onclick: () => setMe(p.id) }, avatar(p.id, true), p.name)));
+  }
+  const line = $('#me-line');
+  if (me) {
+    line.replaceChildren('On this phone you’re ', h('strong', {}, personName(me)), '. ',
+      h('button', { type: 'button', class: 'link', onclick: () => setMe(null) }, 'Change'));
+  } else if (people.length) {
+    line.replaceChildren('This phone isn’t set to anyone on the trip. ',
+      h('button', { type: 'button', class: 'link', onclick: () => setMe(null) }, 'Choose who you are'));
+  } else {
+    line.replaceChildren();
+  }
+}
+
 // ---------- People ----------
 
 let renamingId = null;
@@ -412,11 +491,11 @@ function renderPeople() {
     const inUse = personInUse(p.id);
     return h('li', {},
       avatar(p.id),
-      h('div', { class: 'main title' }, p.name),
+      h('div', { class: 'main title' }, p.name, p.id === meId() ? h('span', { class: 'you' }, 'you') : null),
       h('button', { type: 'button', class: 'quiet', onclick: () => { renamingId = p.id; render(); } }, 'Rename'),
       inUse
         ? h('button', { type: 'button', class: 'quiet', disabled: true, title: 'Remove them from expenses first' }, 'Remove')
-        : confirmButton('Remove', 'Tap to confirm', () => write(() => peopleCol(currentTrip().id).doc(p.id).delete()),
+        : confirmButton('Remove', 'Tap to confirm', () => deleteWithUndo(peopleCol(currentTrip().id), p, `Removed ${p.name}`),
           { class: 'quiet danger' }),
     );
   }));
@@ -512,41 +591,222 @@ $('#rate-reset').addEventListener('click', () => {
   refreshRate();
 });
 
+// ---------- Split editor ----------
+//
+// Equally (default), by shares (e.g. 1, 1, 0.5) or by exact amounts. Shares
+// and amounts are stored as `splitWeights`; see expenseShares() in settle.js.
+
+let splitMode = 'equal';
+let splitValues = {}; // personId -> what's typed in their shares/amount box
+let splitKey = ''; // what the editor was last drawn for; '' after a reset
+
 function selectedSplit() {
-  return [...document.querySelectorAll('#split-options input:checked')].map((i) => i.value);
+  return [...document.querySelectorAll('#split-options input[type="checkbox"]:checked')].map((i) => i.value);
 }
+
+const amountStep = (cur) => (currencyDigits(cur) ? String(10 ** -currencyDigits(cur)) : '1');
+
+/** Draw the split editor. Kept as-is unless the mode or people change, so typing isn't interrupted. */
+function renderSplitEditor(force = false, selected = null) {
+  const key = `${splitMode}|${people.map((p) => `${p.id}:${p.name}`).join(',')}`;
+  if (!force && key === splitKey) return;
+  const fresh = splitKey === '';
+  const previous = new Set(selectedSplit());
+  splitKey = key;
+  document.querySelectorAll('.segmented button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === splitMode)));
+
+  const box = $('#split-options');
+  box.className = splitMode === 'equal' ? 'chips' : 'split-rows';
+  const cur = formCurrency();
+  box.replaceChildren(...people.map((p) => {
+    const checked = selected ? selected.has(p.id) : fresh || previous.has(p.id) || !knownSplitIds.has(p.id);
+    const box = h('input', { type: 'checkbox', value: p.id, checked });
+    if (splitMode === 'equal') {
+      box.addEventListener('change', onSplitChange);
+      return h('label', { class: 'chip' }, box, p.name);
+    }
+    const input = h('input', {
+      type: 'number',
+      inputmode: 'decimal',
+      min: '0',
+      step: splitMode === 'shares' ? 'any' : amountStep(cur),
+      class: 'split-value',
+      'aria-label': `${p.name}'s ${splitMode === 'shares' ? 'shares' : 'amount'}`,
+      placeholder: splitMode === 'shares' ? '1' : minorToInput(0, cur),
+      value: splitValues[p.id] ?? (splitMode === 'shares' ? '1' : ''),
+      disabled: !checked,
+    });
+    input.addEventListener('input', () => { splitValues[p.id] = input.value; onSplitChange(); });
+    box.addEventListener('change', () => { input.disabled = !box.checked; onSplitChange(); });
+    return h('div', { class: 'split-row' },
+      h('label', { class: 'chip' }, box, p.name),
+      input,
+      h('span', { class: 'split-share', 'data-share-for': p.id }));
+  }));
+  knownSplitIds = new Set(people.map((p) => p.id));
+}
+
+function onSplitChange() {
+  updateSplitPreview();
+  updateQuickSummary();
+}
+
+document.querySelectorAll('.segmented button').forEach((b) => {
+  b.addEventListener('click', () => {
+    if (splitMode === b.dataset.mode) return;
+    splitMode = b.dataset.mode;
+    splitValues = {};
+    renderSplitEditor(true);
+    onSplitChange();
+  });
+});
+
+/**
+ * Who shares the expense and how much each owes, in minor units of the
+ * form's currency. `error` explains anything that stops it being saved.
+ */
+function splitPlan() {
+  const ids = selectedSplit();
+  const cur = formCurrency();
+  const total = toMinor($('#expense-amount').value, cur);
+  if (ids.length === 0) return { ids, error: 'Choose at least one person to split this between.' };
+  if (splitMode === 'equal') return { ids, shares: total > 0 ? splitAmount(total, ids.length) : null };
+  if (splitMode === 'shares') {
+    const weights = ids.map((id) => Number(splitValues[id] ?? 1));
+    if (weights.some((w) => !(w >= 0))) return { ids, error: 'Shares must be numbers, like 1 or 0.5.' };
+    if (!weights.some((w) => w > 0)) return { ids, error: 'Give at least one person a share.' };
+    return { ids, weights, shares: total > 0 ? allocate(total, weights) : null };
+  }
+  const amounts = ids.map((id) => {
+    const text = String(splitValues[id] ?? '').trim();
+    return text === '' ? 0 : toMinor(text, cur);
+  });
+  if (amounts.some((a) => !(a >= 0))) return { ids, error: 'Amounts must be numbers.' };
+  const left = (total > 0 ? total : 0) - amounts.reduce((s, a) => s + a, 0);
+  const error = left > 0
+    ? `${formatMoney(left, cur)} still to assign.`
+    : left < 0 ? `The amounts add up to ${formatMoney(-left, cur)} more than the total.` : null;
+  return { ids, weights: amounts, shares: amounts, left, error: total > 0 ? error : null };
+}
+
+function updateSplitPreview() {
+  const cur = formCurrency();
+  const fmt = (m) => formatMoney(m, cur);
+  const total = toMinor($('#expense-amount').value, cur);
+  const plan = splitPlan();
+  const preview = $('#split-preview');
+  document.querySelectorAll('[data-share-for]').forEach((el) => {
+    const i = plan.ids.indexOf(el.dataset.shareFor);
+    el.textContent = splitMode === 'shares' && i >= 0 && plan.shares ? fmt(plan.shares[i]) : '';
+  });
+  let text;
+  if (plan.error && (splitMode !== 'exact' || total > 0)) text = plan.error;
+  else if (!(total > 0)) text = `${plan.ids.length} ${plan.ids.length === 1 ? 'person' : 'people'} selected`;
+  else if (splitMode === 'equal') {
+    const min = Math.min(...plan.shares);
+    const max = Math.max(...plan.shares);
+    text = `${plan.ids.length} ${plan.ids.length === 1 ? 'person' : 'people'} · ${min === max ? fmt(min) : `${fmt(min)}–${fmt(max)}`} each`;
+  } else if (splitMode === 'shares') {
+    const n = plan.weights.reduce((s, w) => s + w, 0);
+    text = `${formatShareCount(n)} ${n === 1 ? 'share' : 'shares'} in total`;
+  } else {
+    text = 'Adds up to the total.';
+  }
+  if (total > 0 && cur !== tripCurrency() && rateState.rate > 0) {
+    text += ` · ${fmt(total)} is ${money(convertMinor(total, cur, tripCurrency(), rateState.rate))}`;
+  }
+  preview.textContent = text;
+  preview.classList.toggle('error-text', !!plan.error && total > 0);
+}
+const formatShareCount = (n) => String(Math.round(n * 100) / 100);
+
+$('#expense-amount').addEventListener('input', updateSplitPreview);
+
+function setAllSplit(checked) {
+  document.querySelectorAll('#split-options input[type="checkbox"]').forEach((i) => {
+    i.checked = checked;
+    i.dispatchEvent(new Event('change'));
+  });
+  onSplitChange();
+}
+$('#split-all').addEventListener('click', () => setAllSplit(true));
+$('#split-none').addEventListener('click', () => setAllSplit(false));
+
+// ---------- Quick-add sheet ----------
+
+const sheet = $('#expense-sheet');
+
+/** One line saying what will be saved, so the extra options can stay folded away. */
+function updateQuickSummary() {
+  if (!people.length) return;
+  const ids = selectedSplit();
+  const everyone = ids.length === people.length && people.length > 1;
+  const who = everyone ? 'everyone' : ids.map(personName).join(', ') || 'nobody';
+  const how = { equal: 'split equally between', shares: 'split by shares between', exact: 'split by amount between' }[splitMode];
+  const date = $('#expense-date').value;
+  const when = !date || date === today() ? 'today' : longDate(date);
+  const parts = [`${personName($('#expense-payer').value)} paid`, `${how} ${who}`, when];
+  const cat = $('#expense-category').value;
+  parts.push(isCategory(cat) ? categoryLabel(cat) : `${categoryLabel(guessCategory($('#expense-desc').value))} (auto)`);
+  $('#quick-summary').textContent = parts.join(' · ');
+}
+['#expense-payer', '#expense-date', '#expense-category'].forEach((sel) => $(sel).addEventListener('change', updateQuickSummary));
+$('#expense-desc').addEventListener('input', updateQuickSummary);
+
+function setMoreOptions(open) {
+  $('#more-options').hidden = !open;
+  $('#more-toggle').setAttribute('aria-expanded', String(open));
+  $('#more-toggle').textContent = open ? 'Fewer options' : 'Change who paid, split, date…';
+}
+$('#more-toggle').addEventListener('click', () => setMoreOptions($('#more-options').hidden));
+
+function openExpenseSheet(expense = null) {
+  if (!people.length) {
+    prefs.tab = 'settings';
+    savePrefs();
+    render();
+    showNotice('Add the people on the trip first.');
+    return;
+  }
+  resetExpenseForm();
+  if (expense) startEdit(expense);
+  else renderExpenseForm();
+  if (!sheet.open) sheet.showModal();
+  if (!expense) $('#expense-amount').focus();
+}
+
+function closeExpenseSheet() {
+  if (sheet.open) sheet.close();
+}
+sheet.addEventListener('close', () => {
+  resetExpenseForm();
+  render();
+});
+// Tapping the dimmed area outside the sheet closes it.
+sheet.addEventListener('click', (e) => { if (e.target === sheet) closeExpenseSheet(); });
+$('#cancel-edit').addEventListener('click', closeExpenseSheet);
+$('#add-expense-fab').addEventListener('click', () => openExpenseSheet());
 
 function renderExpenseForm() {
   const hasPeople = people.length > 0;
   $('#expenses-need-people').hidden = hasPeople;
-  $('#expense-form').hidden = !hasPeople;
   if (!hasPeople) return;
 
   if (editingId && !expenses.some((e) => e.id === editingId)) {
-    resetExpenseForm();
+    closeExpenseSheet();
     showNotice('That expense was deleted by someone else.');
+    return;
   }
 
-  // Preserve current selections across re-renders.
+  // Preserve the chosen payer across re-renders; default to this phone's person.
   const payerSel = $('#expense-payer');
   const prevPayer = payerSel.value;
-  const prevSplit = new Set(selectedSplit());
-  const firstRender = $('#split-options').childElementCount === 0;
-
   payerSel.replaceChildren(...people.map((p) => h('option', { value: p.id }, p.name)));
+  const fallback = meId() || prefs.lastPayer?.[currentTrip().id];
   if (people.some((p) => p.id === prevPayer)) payerSel.value = prevPayer;
+  else if (people.some((p) => p.id === fallback)) payerSel.value = fallback;
 
-  $('#split-options').replaceChildren(...people.map((p) =>
-    h('label', { class: 'chip' },
-      h('input', {
-        type: 'checkbox', value: p.id,
-        checked: firstRender || prevSplit.has(p.id) || !knownSplitIds.has(p.id),
-        onchange: updateSplitPreview,
-      }),
-      p.name,
-    ),
-  ));
-  knownSplitIds = new Set(people.map((p) => p.id));
+  renderSplitEditor();
 
   if (!$('#expense-date').value) $('#expense-date').value = today();
   if (!currencyChosen) {
@@ -562,53 +822,30 @@ function renderExpenseForm() {
   }
   $('#expense-form-title').textContent = editingId ? 'Edit expense' : 'Add an expense';
   $('#expense-submit').textContent = editingId ? 'Save changes' : 'Add expense';
-  $('#cancel-edit').hidden = !editingId;
+
   const deleteSlot = $('#delete-expense-slot');
   if (editingId && deleteSlot.dataset.for !== editingId) {
     const id = editingId;
-    deleteSlot.replaceChildren(confirmButton('Delete', 'Tap again to delete', async () => {
-      resetExpenseForm();
-      render();
-      await write(() => expensesCol(currentTrip().id).doc(id).delete());
+    deleteSlot.replaceChildren(confirmButton('Delete', 'Tap again to delete', () => {
+      const original = expenses.find((x) => x.id === id);
+      closeExpenseSheet();
+      deleteWithUndo(expensesCol(currentTrip().id), original, `Deleted “${original.description}”`);
     }, { class: 'danger' }));
     deleteSlot.dataset.for = id;
   } else if (!editingId && deleteSlot.dataset.for) {
     deleteSlot.replaceChildren();
     delete deleteSlot.dataset.for;
   }
-  updateSplitPreview();
-}
 
-function updateSplitPreview() {
-  const ids = selectedSplit();
-  const cur = formCurrency();
-  const minor = toMinor($('#expense-amount').value, cur);
-  const preview = $('#split-preview');
-  const count = `${ids.length} ${ids.length === 1 ? 'person' : 'people'}`;
-  const fmt = (m) => formatMoney(m, cur);
-  if (ids.length === 0) {
-    preview.textContent = 'Select at least one person.';
-  } else if (minor > 0) {
-    const shares = splitAmount(minor, ids.length);
-    const min = Math.min(...shares);
-    const max = Math.max(...shares);
-    let text = `${count} · ${min === max ? fmt(min) : `${fmt(min)}–${fmt(max)}`} each`;
-    if (cur !== tripCurrency() && rateState.rate > 0) {
-      text += ` · ${fmt(minor)} is ${money(convertMinor(minor, cur, tripCurrency(), rateState.rate))}`;
-    }
-    preview.textContent = text;
-  } else {
-    preview.textContent = `${count} selected`;
-  }
-}
-$('#expense-amount').addEventListener('input', updateSplitPreview);
+  const original = editingId && expenses.find((x) => x.id === editingId);
+  const meta = [];
+  if (original?.createdBy) meta.push(`Added by ${personName(original.createdBy)}`);
+  if (original?.updatedBy) meta.push(`last changed by ${personName(original.updatedBy)}`);
+  $('#sheet-meta').textContent = meta.join(', ');
 
-function setAllSplit(checked) {
-  document.querySelectorAll('#split-options input').forEach((i) => { i.checked = checked; });
   updateSplitPreview();
+  updateQuickSummary();
 }
-$('#split-all').addEventListener('click', () => setAllSplit(true));
-$('#split-none').addEventListener('click', () => setAllSplit(false));
 
 function resetExpenseForm() {
   editingId = null;
@@ -618,16 +855,16 @@ function resetExpenseForm() {
   currencyChosen = false;
   rateRequest++;
   rateState = emptyRate();
-  updateAutoCategory();
-  $('#expense-error').textContent = '';
-  $('#split-options').replaceChildren();
+  splitMode = 'equal';
+  splitValues = {};
+  splitKey = '';
   knownSplitIds = new Set();
+  $('#split-options').replaceChildren();
+  updateAutoCategory();
+  setMoreOptions(false);
+  $('#expense-error').textContent = '';
+  $('#sheet-meta').textContent = '';
 }
-
-$('#cancel-edit').addEventListener('click', () => {
-  resetExpenseForm();
-  render();
-});
 
 $('#expense-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -635,18 +872,26 @@ $('#expense-form').addEventListener('submit', async (e) => {
   const currency = formCurrency();
   const amountCents = toMinor($('#expense-amount').value, currency);
   const paidBy = $('#expense-payer').value;
-  const splitAmong = selectedSplit();
   const date = $('#expense-date').value || today();
   const error = $('#expense-error');
+  const plan = splitPlan();
+  const showOptions = () => setMoreOptions(true);
 
-  if (!description) return void (error.textContent = 'Enter a description.');
   if (!(amountCents > 0)) return void (error.textContent = 'Enter an amount greater than zero.');
-  if (splitAmong.length === 0) return void (error.textContent = 'Choose at least one person to split this between.');
+  if (!description) return void (error.textContent = 'Say what it was, like “Dinner”.');
+  if (plan.error) {
+    showOptions();
+    return void (error.textContent = plan.error);
+  }
   // Expenses in the main currency don't store one, like expenses from before
   // currencies were added.
-  const data = { description, amountCents, paidBy, splitAmong, date };
+  const data = { description, amountCents, paidBy, splitAmong: plan.ids, date };
   const category = $('#expense-category').value;
   if (isCategory(category)) data.category = category;
+  if (splitMode !== 'equal') {
+    data.splitMode = splitMode;
+    data.splitWeights = Object.fromEntries(plan.ids.map((id, i) => [id, plan.weights[i]]));
+  }
   if (currency !== tripCurrency()) {
     data.currency = currency;
     if (rateState.loading) return void (error.textContent = 'Still getting the exchange rate. Try again in a moment.');
@@ -662,16 +907,26 @@ $('#expense-form').addEventListener('submit', async (e) => {
 
   const col = expensesCol(currentTrip().id);
   const id = editingId;
+  const original = id && expenses.find((x) => x.id === id);
+  const me = meId();
+  if (original?.createdBy) data.createdBy = original.createdBy;
+  else if (!id && me) data.createdBy = me;
+  if (id && me) data.updatedBy = me;
+  const newId = id || uid();
   const submit = $('#expense-submit');
   submit.disabled = true;
-  // Save the whole expense so fields from its old currency don't linger.
-  const createdAt = (id && expenses.find((x) => x.id === id)?.createdAt) || Date.now();
-  const ok = await write(() => col.doc(id || uid()).set({ ...data, createdAt }));
+  // Save the whole expense so fields from its old currency or split don't linger.
+  const ok = await write(() => col.doc(newId).set({ ...data, createdAt: original?.createdAt || Date.now() }));
   submit.disabled = false;
   if (!ok) return;
-  resetExpenseForm();
-  render();
-  $('#expense-desc').focus();
+  prefs.lastPayer = { ...prefs.lastPayer, [currentTrip().id]: paidBy };
+  savePrefs();
+  closeExpenseSheet();
+  if (original) {
+    showToast('Changes saved', () => restoreDoc(col, original));
+  } else {
+    showToast(`Added “${description}”`, () => write(() => col.doc(newId).delete()));
+  }
 });
 
 function startEdit(expense) {
@@ -688,14 +943,19 @@ function startEdit(expense) {
   $('#expense-category').value = isCategory(expense.category) ? expense.category : '';
   updateAutoCategory();
   $('#expense-amount').value = minorToInput(expense.amountCents, cur);
+  $('#expense-payer').replaceChildren(...people.map((p) => h('option', { value: p.id }, p.name)));
   $('#expense-payer').value = expense.paidBy;
   $('#expense-date').value = expense.date || '';
-  document.querySelectorAll('#split-options input').forEach((i) => {
-    i.checked = expense.splitAmong.includes(i.value);
-  });
+  splitMode = expense.splitMode === 'shares' || expense.splitMode === 'exact' ? expense.splitMode : 'equal';
+  splitValues = {};
+  if (splitMode !== 'equal') {
+    for (const [pid, w] of Object.entries(expense.splitWeights ?? {})) {
+      splitValues[pid] = splitMode === 'exact' ? minorToInput(w, cur) : String(w);
+    }
+  }
+  splitKey = '';
+  renderSplitEditor(true, new Set(expense.splitAmong));
   renderExpenseForm();
-  $('#expense-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  $('#expense-desc').focus();
 }
 
 const dayLabel = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
@@ -703,16 +963,19 @@ const dayLabel = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefin
 function renderExpenses() {
   const list = $('#expense-list');
   const trip = tripCurrency();
-  const { usable } = expensesInTripCurrency();
+  const bought = expenses.filter((e) => !isPayment(e));
+  const usable = expensesInTripCurrency().usable.filter((e) => !isPayment(e));
   const total = usable.reduce((s, e) => s + e.amountCents, 0);
-  $('#expense-total').textContent = expenses.length ? money(total) : '';
+  $('#expense-total').textContent = bought.length ? money(total) : '';
+  $('#add-expense-fab').hidden = people.length === 0;
+  $('#expenses-need-people').hidden = people.length > 0;
 
-  if (expenses.length === 0) {
-    list.replaceChildren(h('li', { class: 'empty-row' }, 'No expenses yet.'));
+  if (bought.length === 0) {
+    list.replaceChildren(h('li', { class: 'empty-row' }, people.length ? 'No expenses yet. Tap “Add expense” to add the first one.' : 'No expenses yet.'));
     return;
   }
 
-  const sorted = [...expenses].sort((a, b) =>
+  const sorted = [...bought].sort((a, b) =>
     (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
 
   // Group by day, newest first, with each day's total in the main currency.
@@ -726,18 +989,19 @@ function renderExpenses() {
     }
     const everyone = people.length > 1 && people.every((p) => e.splitAmong.includes(p.id));
     const splitText = everyone ? 'everyone' : e.splitAmong.map(personName).join(', ');
+    const how = e.splitMode === 'shares' || e.splitMode === 'exact' ? 'split unevenly between' : 'split between';
     const cur = expenseCurrency(e, trip);
     const inTrip = amountInTripCurrency(e, trip);
     const original = formatMoney(e.amountCents, cur);
     const paid = cur === trip ? 'paid' : inTrip == null ? `paid ${original}` : `paid ${original} at ${formatRate(e.rate)}`;
-    rows.push(h('li', { class: e.id === editingId ? 'expense editing' : 'expense' },
-      h('button', { type: 'button', class: 'expense-button', 'aria-label': `Edit ${e.description}`, onclick: () => startEdit(e) },
+    rows.push(h('li', { class: 'expense' },
+      h('button', { type: 'button', class: 'expense-button', 'aria-label': `Edit ${e.description}`, onclick: () => openExpenseSheet(e) },
         avatar(e.paidBy),
         h('div', { class: 'main' },
           h('div', { class: 'title' }, e.description),
           h('div', { class: 'sub' },
             h('span', { class: `cat-tag cat-${expenseCategory(e)}` }, categoryLabel(expenseCategory(e))),
-            ` ${personName(e.paidBy)} ${paid} · split between ${splitText}`),
+            ` ${personName(e.paidBy)} ${paid} · ${how} ${splitText}`),
           inTrip == null ? h('div', { class: 'sub needs-rate' }, `No exchange rate into ${trip}. Tap to add one.`) : null,
         ),
         h('div', { class: inTrip == null ? 'amount needs-rate' : 'amount' }, inTrip == null ? original : money(inTrip)),
@@ -763,7 +1027,8 @@ document.addEventListener('pointerdown', (e) => {
 });
 
 function renderSpending() {
-  const { usable, missing } = expensesInTripCurrency();
+  const { usable: all, missing } = expensesInTripCurrency();
+  const usable = all.filter((e) => !isPayment(e));
   const { days, totals, total } = spendingByDay(usable);
   const empty = days.length === 0;
   $('#spend-empty').hidden = !empty;
@@ -866,6 +1131,21 @@ function renderSpending() {
 
 // ---------- Settle up ----------
 
+const shortDate = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+
+/** Record that one person has paid another back. */
+async function recordRepayment(from, to, amountCents) {
+  const col = expensesCol(currentTrip().id);
+  const id = uid();
+  const me = meId();
+  const data = {
+    kind: 'payment', description: 'Repayment', amountCents, paidBy: from, splitAmong: [to],
+    date: today(), createdAt: Date.now(), ...(me ? { createdBy: me } : {}),
+  };
+  const ok = await write(() => col.doc(id).set(data));
+  if (ok) showToast(`Recorded ${personName(from)} paying ${personName(to)} ${money(amountCents)}`, () => write(() => col.doc(id).delete()));
+}
+
 function renderSettle() {
   const { usable, missing } = expensesInTripCurrency();
   const balances = computeBalances(people, usable);
@@ -873,6 +1153,7 @@ function renderSettle() {
     ? `${missing === 1 ? '1 expense is' : `${missing} expenses are`} left out because ${missing === 1 ? 'it has' : 'they have'} no exchange rate into ${tripCurrency()}. Edit ${missing === 1 ? 'it' : 'them'} on the Expenses tab to add one.`
     : '';
   const payments = settleUp(balances);
+  const me = meId();
 
   $('#balance-list').replaceChildren(...(people.length ? people.map((p) => {
     const b = balances.get(p.id);
@@ -881,40 +1162,63 @@ function renderSettle() {
       : b.net < 0
         ? h('span', { class: 'pill negative' }, `owes ${money(-b.net)}`)
         : h('span', { class: 'pill neutral' }, 'settled');
+    const sub = [`Paid ${money(b.paid)}`, `share ${money(b.share)}`];
+    if (b.sent) sub.push(`paid back ${money(b.sent)}`);
+    if (b.received) sub.push(`got back ${money(b.received)}`);
     return h('li', {},
       avatar(p.id),
       h('div', { class: 'main' },
-        h('div', { class: 'title' }, p.name),
-        h('div', { class: 'sub' }, `Paid ${money(b.paid)} · share ${money(b.share)}`),
+        h('div', { class: 'title' }, p.name, p.id === me ? h('span', { class: 'you' }, 'you') : null),
+        h('div', { class: 'sub' }, sub.join(' · ')),
       ),
       pill,
     );
   }) : [h('li', { class: 'empty-row' }, 'Add people to see balances.')]));
 
+  const bought = expenses.some((e) => !isPayment(e));
   const list = $('#payment-list');
   if (payments.length === 0) {
     list.replaceChildren(h('li', { class: 'empty-row' },
-      expenses.length ? 'Everyone is square. Nothing to pay.' : 'Add some expenses to see who owes whom.'));
+      bought ? 'Everyone is square. Nothing to pay.' : 'Add some expenses to see who owes whom.'));
   } else {
     list.replaceChildren(...payments.map((p) =>
-      h('li', {},
-        h('div', { class: 'main who' },
-          avatar(p.from, true), h('span', {}, personName(p.from)),
-          h('span', { class: 'arrow' }, 'pays'),
-          avatar(p.to, true), h('span', {}, personName(p.to)),
+      h('li', { class: p.from === me || p.to === me ? 'mine' : null },
+        h('div', { class: 'main' },
+          h('div', { class: 'who' },
+            avatar(p.from, true), h('span', {}, personName(p.from)),
+            h('span', { class: 'arrow' }, 'pays'),
+            avatar(p.to, true), h('span', {}, personName(p.to))),
+          confirmButton('Mark as paid', `Confirm ${personName(p.from)} paid`, () => recordRepayment(p.from, p.to, p.amountCents),
+            { class: 'link mark-paid' }),
         ),
         h('div', { class: 'amount' }, money(p.amountCents)),
       ),
     ));
   }
   $('#copy-summary').parentElement.hidden = payments.length === 0;
+
+  const repayments = expenses.filter(isPayment)
+    .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
+  $('#repayments-card').hidden = repayments.length === 0;
+  $('#repayment-list').replaceChildren(...repayments.map((r) => {
+    const inTrip = amountInTripCurrency(r, tripCurrency());
+    return h('li', {},
+      h('div', { class: 'main' },
+        h('div', { class: 'title' }, `${personName(r.paidBy)} paid ${personName(r.splitAmong[0])}`),
+        h('div', { class: 'sub' }, r.date ? shortDate(r.date) : ''),
+      ),
+      h('div', { class: 'amount' }, inTrip == null ? formatMoney(r.amountCents, expenseCurrency(r, tripCurrency())) : money(inTrip)),
+      confirmButton('Remove', 'Tap to confirm', () => deleteWithUndo(expensesCol(currentTrip().id), r, 'Repayment removed'),
+        { class: 'quiet danger' }),
+    );
+  }));
 }
 
 $('#copy-summary').addEventListener('click', () => {
   const trip = currentTrip();
   const { usable } = expensesInTripCurrency();
   const payments = settleUp(computeBalances(people, usable));
-  const total = usable.reduce((s, e) => s + e.amountCents, 0);
+  const total = usable.filter((e) => !isPayment(e)).reduce((s, e) => s + e.amountCents, 0);
   const text = [
     `${trip.name || 'Trip'}: total spent ${money(total)}`,
     '',
@@ -961,30 +1265,81 @@ function render() {
     b.setAttribute('aria-selected', String(b.dataset.tab === prefs.tab));
   });
   document.querySelectorAll('.tab-panel').forEach((p) => { p.hidden = p.dataset.panel !== prefs.tab; });
+  renderWhoAmI(trip);
   renderPeople();
-  renderExpenseForm();
+  if (sheet.open) renderExpenseForm();
   renderExpenses();
   if (prefs.tab === 'spending') renderSpending();
   renderSettle();
+  renderDeleteTrip(trip);
+  renderInstall();
+}
 
-  const deleteSlot = $('#delete-trip-slot');
-  if (deleteSlot.dataset.for !== trip.id) {
-    deleteSlot.replaceChildren(
-      confirmButton('Delete this trip', 'Tap again to delete it for everyone', () => deleteTrip(trip), { class: 'danger' }),
-    );
-    deleteSlot.dataset.for = trip.id;
+// ---------- Deleting a trip: type its name to confirm ----------
+
+const deleteWord = (trip) => (trip?.name || '').trim() || 'delete';
+
+function renderDeleteTrip(trip) {
+  $('#delete-trip-prompt').textContent = `Type “${deleteWord(trip)}” to confirm`;
+  const typed = $('#delete-trip-confirm').value.trim().toLowerCase();
+  $('#delete-trip-button').disabled = typed !== deleteWord(trip).toLowerCase();
+}
+$('#delete-trip-confirm').addEventListener('input', () => renderDeleteTrip(currentTrip()));
+$('#delete-trip-button').addEventListener('click', async () => {
+  const trip = currentTrip();
+  if ($('#delete-trip-confirm').value.trim().toLowerCase() !== deleteWord(trip).toLowerCase()) return;
+  $('#delete-trip-confirm').value = '';
+  $('#delete-trip-button').disabled = true;
+  await deleteTrip(trip);
+  showToast(`Deleted “${trip.name || 'Untitled trip'}”`);
+});
+
+// ---------- Install as an app ----------
+
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  renderInstall();
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  renderInstall();
+});
+
+function renderInstall() {
+  const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  $('#install-card').hidden = installed || !(installPrompt || ios);
+  $('#install-button').hidden = !installPrompt;
+  if (ios && !installPrompt) {
+    $('#install-text').textContent = 'In Safari, tap the Share button, then “Add to Home Screen”. It then opens full screen, like an app, and works without signal.';
   }
+}
+$('#install-button').addEventListener('click', async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null;
+  renderInstall();
+});
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {
+    // Not available here (for example inside another app's frame): the app still works online.
+  });
 }
 
 function renderHero(trip) {
   $('#hero-title').textContent = trip.name || 'Untitled trip';
   const { usable } = expensesInTripCurrency();
-  const total = usable.reduce((s, e) => s + e.amountCents, 0);
-  const dates = expenses.map((e) => e.date).filter(Boolean).sort();
+  const bought = expenses.filter((e) => !isPayment(e));
+  const total = usable.filter((e) => !isPayment(e)).reduce((s, e) => s + e.amountCents, 0);
+  const dates = bought.map((e) => e.date).filter(Boolean).sort();
   const parts = [];
   const summary = $('#hero-summary');
   summary.replaceChildren();
-  if (expenses.length) summary.append(h('strong', {}, money(total)), ' spent');
+  if (bought.length) summary.append(h('strong', {}, money(total)), ' spent');
   parts.push(`${people.length} ${people.length === 1 ? 'person' : 'people'}`);
   if (dates.length) {
     const fmt = (iso, withYear) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,
@@ -993,7 +1348,17 @@ function renderHero(trip) {
     const last = dates[dates.length - 1];
     parts.push(first === last ? fmt(first, true) : `${fmt(first, first.slice(0, 4) !== last.slice(0, 4))} – ${fmt(last, true)}`);
   }
-  summary.append(`${expenses.length ? ' · ' : ''}${parts.join(' · ')}`);
+  summary.append(`${bought.length ? ' · ' : ''}${parts.join(' · ')}`);
+
+  // Where this phone's person stands.
+  const me = meId();
+  const heroMe = $('#hero-me');
+  heroMe.hidden = !me || !bought.length;
+  if (me && bought.length) {
+    const net = computeBalances(people, usable).get(me)?.net ?? 0;
+    heroMe.className = `hero-me ${net > 0 ? 'positive' : net < 0 ? 'negative' : ''}`;
+    heroMe.textContent = net > 0 ? `You’re owed ${money(net)}` : net < 0 ? `You owe ${money(-net)}` : 'You’re all square';
+  }
   $('#photo-button-label').textContent = photo ? 'Change photo' : 'Add cover photo';
 }
 

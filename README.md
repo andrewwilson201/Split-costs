@@ -23,6 +23,22 @@ A small web app for tracking shared spending on a trip and working out who owes 
   description ("Dinner" is Food, "Terrace beer" is Drinks), and the category
   can be changed on the expense. The Spending tab shows a stacked bar per day
   split by category, with category totals and a table view.
+- **Who's who**: each phone picks which person it belongs to, once per trip.
+  New expenses are then paid by you by default, the cover shows what you owe
+  or are owed, and each expense records who added and last changed it.
+- **Quick add**: the Add expense button opens a short sheet: amount, what it
+  was, done. Payer, split, date and category are filled in and can be
+  changed under "Change who paid, split, date…".
+- **Uneven splits**: split equally, by shares (e.g. 1, 1, 0.5) or by exact
+  amounts per person.
+- **Repayments**: tap "Mark as paid" on a suggested payment to record it. The
+  balances update, and repayments are listed separately from spending.
+- **Undo**: adding, changing or deleting an expense, removing a person or a
+  repayment can be undone for a few seconds. Deleting a whole trip needs its
+  name typed in.
+- **Install as an app**: on Android, "Install app" on the Trip tab (or
+  Chrome's menu) adds it to the home screen. On iPhone use Share → Add to
+  Home Screen. It opens full screen and works without signal.
 - **Settle up**: shows what each person paid, their fair share and their
   balance, then lists the fewest payments needed to even everything out
   (at most *n − 1* payments for *n* people). Use "Copy summary" to paste it

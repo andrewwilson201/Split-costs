@@ -6,6 +6,11 @@
   <title>Split Costs</title>
   <meta name="description" content="Track shared trip expenses and work out who owes whom.">
   <meta name="theme-color" content="#0f2f2d">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
@@ -43,6 +48,7 @@
       <section class="hero">
         <h1 id="hero-title" class="hero-title"></h1>
         <p id="hero-summary" class="hero-summary"></p>
+        <p id="hero-me" class="hero-me" hidden></p>
         <div class="hero-actions">
           <div id="invite" hidden>
             <button type="button" id="copy-link" class="ghost">
@@ -66,69 +72,22 @@
         <button type="button" role="tab" data-tab="settings">Trip</button>
       </nav>
 
+      <!-- Asked once per phone, so "Paid by" and balances can default to you. -->
+      <section id="whoami" class="card whoami" hidden>
+        <h2>Which one is you?</h2>
+        <p class="small muted">This phone will remember, so new expenses are paid by you and you can see what you owe.</p>
+        <div id="whoami-options" class="chips"></div>
+        <button type="button" id="whoami-skip" class="link">I'm not on this trip</button>
+      </section>
+
       <!-- Expenses -->
       <div class="tab-panel stack" data-panel="expenses">
-        <section class="card">
-          <h2 id="expense-form-title">Add an expense</h2>
-          <p id="expenses-need-people" class="muted" hidden>Add the people on the trip first, on the People tab.</p>
-          <form id="expense-form" class="form">
-            <label>What was it?
-              <input id="expense-desc" type="text" placeholder="Dinner, taxi, museum tickets…" maxlength="80" required>
-            </label>
-            <div class="row money-row">
-              <label class="grow">Amount
-                <input id="expense-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" required>
-              </label>
-              <label class="currency-field">Currency
-                <select id="expense-currency"></select>
-              </label>
-            </div>
-            <div id="rate-row" class="rate-row" hidden>
-              <label for="expense-rate" class="rate-line">
-                <span id="rate-from"></span>
-                <input id="expense-rate" type="number" inputmode="decimal" min="0" step="any" aria-describedby="rate-note">
-                <span id="rate-to"></span>
-              </label>
-              <p class="small muted">
-                <span id="rate-note" aria-live="polite"></span>
-                <button type="button" class="link" id="rate-reset" hidden>Use market rate</button>
-              </p>
-            </div>
-            <label>Paid by
-              <select id="expense-payer" required></select>
-            </label>
-            <div class="row">
-              <label class="grow">Category
-                <select id="expense-category"></select>
-              </label>
-              <label class="date-field">Date
-                <input id="expense-date" type="date">
-              </label>
-            </div>
-            <fieldset>
-              <legend>Split between
-                <span class="split-actions">
-                  <button type="button" class="link" id="split-all">All</button>
-                  <button type="button" class="link" id="split-none">None</button>
-                </span>
-              </legend>
-              <div id="split-options" class="chips"></div>
-              <p id="split-preview" class="small muted"></p>
-            </fieldset>
-            <p id="expense-error" class="error" role="alert"></p>
-            <div class="form-actions">
-              <div id="delete-expense-slot"></div>
-              <button type="button" id="cancel-edit" class="secondary" hidden>Cancel</button>
-              <button type="submit" id="expense-submit">Add expense</button>
-            </div>
-          </form>
-        </section>
-
         <section class="card">
           <div class="card-head">
             <h2>Expenses</h2>
             <span id="expense-total" class="figure"></span>
           </div>
+          <p id="expenses-need-people" class="muted" hidden>Add the people on the trip first, on the Trip tab.</p>
           <ul id="expense-list" class="list"></ul>
         </section>
       </div>
@@ -170,12 +129,17 @@
           <h2>Balances</h2>
           <ul id="balance-list" class="list"></ul>
         </section>
+        <section id="repayments-card" class="card" hidden>
+          <h2>Repayments made</h2>
+          <ul id="repayment-list" class="list"></ul>
+        </section>
       </div>
 
       <!-- Trip settings -->
       <div class="tab-panel stack" data-panel="settings">
         <section class="card">
           <h2>Who's on the trip?</h2>
+          <p id="me-line" class="small muted"></p>
           <form id="add-person-form" class="row add-person">
             <input id="person-name" type="text" placeholder="Name" maxlength="40" required class="grow" aria-label="Person's name">
             <button type="submit">Add</button>
@@ -211,16 +175,113 @@
           </div>
         </section>
 
-        <section class="card">
+        <section id="install-card" class="card" hidden>
+          <h2>Install on your phone</h2>
+          <p id="install-text" class="small muted">Add Split Costs to your home screen. It opens full screen, like an app, and works without signal.</p>
+          <button type="button" id="install-button" hidden>Install app</button>
+        </section>
+
+        <section class="card form">
           <h2>Delete trip</h2>
-          <p class="small muted">Removes the trip, its people and all expenses for everyone.</p>
-          <div id="delete-trip-slot"></div>
+          <p class="small muted">Removes the trip, its people and all expenses for everyone on the trip. This can't be undone.</p>
+          <label>
+            <span id="delete-trip-prompt">Type the trip name to confirm</span>
+            <input id="delete-trip-confirm" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+          </label>
+          <div class="form-actions start">
+            <button type="button" id="delete-trip-button" class="danger" disabled>Delete this trip</button>
+          </div>
         </section>
       </div>
     </div>
   </main>
 
   <footer id="storage-note" class="footer"></footer>
+
+  <button type="button" id="add-expense-fab" class="fab" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+    Add expense
+  </button>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+    <span id="toast-text"></span>
+    <button type="button" id="toast-undo" class="link">Undo</button>
+  </div>
+
+  <!-- Add / edit an expense -->
+  <dialog id="expense-sheet" class="sheet" aria-labelledby="expense-form-title">
+    <form id="expense-form" class="form">
+      <div class="sheet-head">
+        <h2 id="expense-form-title">Add an expense</h2>
+        <button type="button" id="cancel-edit" class="quiet" aria-label="Close">Cancel</button>
+      </div>
+
+      <div class="amount-row">
+        <label class="grow">Amount
+          <input id="expense-amount" class="amount-input" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" required>
+        </label>
+        <label class="currency-field">Currency
+          <select id="expense-currency"></select>
+        </label>
+      </div>
+      <div id="rate-row" class="rate-row" hidden>
+        <label for="expense-rate" class="rate-line">
+          <span id="rate-from"></span>
+          <input id="expense-rate" type="number" inputmode="decimal" min="0" step="any" aria-describedby="rate-note">
+          <span id="rate-to"></span>
+        </label>
+        <p class="small muted">
+          <span id="rate-note" aria-live="polite"></span>
+          <button type="button" class="link" id="rate-reset" hidden>Use market rate</button>
+        </p>
+      </div>
+
+      <label>What was it?
+        <input id="expense-desc" type="text" placeholder="Dinner, taxi, museum tickets…" maxlength="80" required enterkeyhint="done">
+      </label>
+
+      <div class="quick-summary">
+        <p id="quick-summary" class="small"></p>
+        <button type="button" id="more-toggle" class="link" aria-expanded="false" aria-controls="more-options">More options</button>
+      </div>
+
+      <div id="more-options" class="form" hidden>
+        <label>Paid by
+          <select id="expense-payer" required></select>
+        </label>
+        <div class="row">
+          <label class="grow">Category
+            <select id="expense-category"></select>
+          </label>
+          <label class="date-field">Date
+            <input id="expense-date" type="date">
+          </label>
+        </div>
+        <fieldset>
+          <legend>Split between
+            <span class="split-actions">
+              <button type="button" class="link" id="split-all">All</button>
+              <button type="button" class="link" id="split-none">None</button>
+            </span>
+          </legend>
+          <div class="segmented" role="radiogroup" aria-label="How to split">
+            <button type="button" role="radio" data-mode="equal">Equally</button>
+            <button type="button" role="radio" data-mode="shares">By shares</button>
+            <button type="button" role="radio" data-mode="exact">By amount</button>
+          </div>
+          <div id="split-options" class="chips"></div>
+          <p id="split-preview" class="small muted"></p>
+        </fieldset>
+      </div>
+
+      <p id="sheet-meta" class="small muted"></p>
+      <p id="expense-error" class="error" role="alert"></p>
+      <div class="form-actions">
+        <div id="delete-expense-slot"></div>
+        <button type="submit" id="expense-submit">Add expense</button>
+      </div>
+    </form>
+  </dialog>
 
   <script type="module" src="app.js"></script>
 </body>

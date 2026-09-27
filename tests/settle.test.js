@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toCents, formatCents, splitAmount, computeBalances, settleUp } from '../settle.js';
+import { toCents, formatCents, splitAmount, computeBalances, settleUp, allocate, expenseShares } from '../settle.js';
 
 const people = [
   { id: 'a', name: 'Alice' },
@@ -33,7 +33,7 @@ test('expense split among everyone', () => {
   const balances = computeBalances(people, [
     { amountCents: 9000, paidBy: 'a', splitAmong: ['a', 'b', 'c'] },
   ]);
-  assert.deepEqual(balances.get('a'), { paid: 9000, share: 3000, net: 6000 });
+  assert.deepEqual(balances.get('a'), { paid: 9000, share: 3000, sent: 0, received: 0, net: 6000 });
   assert.equal(balances.get('b').net, -3000);
   assert.equal(balances.get('c').net, -3000);
   assert.deepEqual(settleUp(balances), [
@@ -78,6 +78,40 @@ test('invalid expenses are ignored', () => {
     { amountCents: 1000, paidBy: 'a', splitAmong: [] },
     { amountCents: 0, paidBy: 'a', splitAmong: ['b'] },
   ]);
-  for (const b of balances.values()) assert.deepEqual(b, { paid: 0, share: 0, net: 0 });
+  for (const b of balances.values()) assert.equal(b.net, 0);
   assert.deepEqual(settleUp(balances), []);
+});
+
+test('allocate splits exactly by weight', () => {
+  assert.deepEqual(allocate(1000, [1, 1, 1]), [334, 333, 333]);
+  assert.deepEqual(allocate(1000, [2, 1, 1]), [500, 250, 250]);
+  assert.deepEqual(allocate(1001, [2, 1, 1]), [501, 250, 250]);
+  assert.deepEqual(allocate(100, [0.5, 1]), [33, 67]);
+  assert.deepEqual(allocate(100, [0, 0]), [0, 0]);
+  for (let t = 1; t < 300; t += 13) assert.equal(allocate(t, [3, 1, 2.5, 7]).reduce((s, x) => s + x, 0), t);
+});
+
+test('shares and exact splits', () => {
+  const base = { amountCents: 6000, paidBy: 'a', splitAmong: ['a', 'b', 'c'] };
+  assert.deepEqual(expenseShares(base), [2000, 2000, 2000]);
+  assert.deepEqual(expenseShares({ ...base, splitMode: 'shares', splitWeights: { a: 1, b: 1, c: 0.5 } }), [2400, 2400, 1200]);
+  assert.deepEqual(expenseShares({ ...base, splitMode: 'exact', splitWeights: { a: 3000, b: 2000, c: 1000 } }), [3000, 2000, 1000]);
+  // Exact amounts still apply proportionally after conversion to another currency.
+  assert.deepEqual(expenseShares({ ...base, amountCents: 5160, splitMode: 'exact', splitWeights: { a: 3000, b: 2000, c: 1000 } }), [2580, 1720, 860]);
+  // Missing weights fall back to an equal split.
+  assert.deepEqual(expenseShares({ ...base, splitMode: 'shares', splitWeights: {} }), [2000, 2000, 2000]);
+  const balances = computeBalances(people, [{ ...base, splitMode: 'exact', splitWeights: { a: 3000, b: 2000, c: 1000 } }]);
+  assert.equal(balances.get('b').net, -2000);
+  assert.equal(balances.get('a').net, 3000);
+});
+
+test('repayments settle balances without counting as spending', () => {
+  const expenses = [
+    { amountCents: 9000, paidBy: 'a', splitAmong: ['a', 'b', 'c'] },
+    { kind: 'payment', amountCents: 3000, paidBy: 'b', splitAmong: ['a'] },
+  ];
+  const balances = computeBalances(people, expenses);
+  assert.deepEqual(balances.get('b'), { paid: 0, share: 3000, sent: 3000, received: 0, net: 0 });
+  assert.deepEqual(balances.get('a'), { paid: 9000, share: 3000, sent: 0, received: 3000, net: 3000 });
+  assert.deepEqual(settleUp(balances), [{ from: 'c', to: 'a', amountCents: 3000 }]);
 });

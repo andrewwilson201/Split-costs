@@ -30,17 +30,55 @@ export function splitAmount(totalCents, n) {
 }
 
 /**
- * Work out what each person paid, what their fair share was, and their net
- * position (positive = they are owed money, negative = they owe money).
+ * Split `total` in proportion to `weights`, in whole units, so the parts
+ * always add up exactly to the total. Leftover units go to the largest
+ * fractional parts (ties to whoever is listed first).
+ */
+export function allocate(total, weights) {
+  const sum = weights.reduce((s, w) => s + w, 0);
+  if (!(sum > 0)) return weights.map(() => 0);
+  const exact = weights.map((w) => (total * w) / sum);
+  const parts = exact.map(Math.floor);
+  let left = total - parts.reduce((s, x) => s + x, 0);
+  const order = exact.map((x, i) => [x - Math.floor(x), i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (const [, i] of order) {
+    if (left <= 0) break;
+    parts[i] += 1;
+    left -= 1;
+  }
+  return parts;
+}
+
+/** True for a repayment between two people rather than something bought. */
+export const isPayment = (e) => e.kind === 'payment';
+
+/**
+ * Each participant's share of an expense, in the same units as `amountCents`.
+ * Split modes: equal (default), 'shares' (weights like 2:1:1) or 'exact'
+ * (amounts per person, stored as weights that add up to the total, so they
+ * still apply after the expense is converted into another currency).
+ */
+export function expenseShares(e) {
+  const ids = e.splitAmong.filter(Boolean);
+  if (e.splitMode === 'shares' || e.splitMode === 'exact') {
+    const weights = ids.map((id) => Math.max(0, Number(e.splitWeights?.[id]) || 0));
+    if (weights.some((w) => w > 0)) return allocate(e.amountCents, weights);
+  }
+  return splitAmount(e.amountCents, ids.length);
+}
+
+/**
+ * Work out what each person paid, what their fair share was, any repayments
+ * they've made or received, and their net position (positive = they are owed
+ * money, negative = they owe money).
  *
- * @param {{id: string, name: string}[]} people
- * @param {{amountCents: number, paidBy: string, splitAmong: string[]}[]} expenses
- * @returns {Map<string, {paid: number, share: number, net: number}>}
+ * @returns {Map<string, {paid: number, share: number, sent: number, received: number, net: number}>}
  */
 export function computeBalances(people, expenses) {
-  const balances = new Map(people.map((p) => [p.id, { paid: 0, share: 0, net: 0 }]));
+  const blank = () => ({ paid: 0, share: 0, sent: 0, received: 0, net: 0 });
+  const balances = new Map(people.map((p) => [p.id, blank()]));
   const ensure = (id) => {
-    if (!balances.has(id)) balances.set(id, { paid: 0, share: 0, net: 0 });
+    if (!balances.has(id)) balances.set(id, blank());
     return balances.get(id);
   };
 
@@ -48,14 +86,19 @@ export function computeBalances(people, expenses) {
     const participants = e.splitAmong.filter(Boolean);
     if (!e.paidBy || participants.length === 0 || !(e.amountCents > 0)) continue;
 
+    if (isPayment(e)) {
+      ensure(e.paidBy).sent += e.amountCents;
+      ensure(participants[0]).received += e.amountCents;
+      continue;
+    }
     ensure(e.paidBy).paid += e.amountCents;
-    const shares = splitAmount(e.amountCents, participants.length);
+    const shares = expenseShares(e);
     participants.forEach((id, i) => {
       ensure(id).share += shares[i];
     });
   }
 
-  for (const b of balances.values()) b.net = b.paid - b.share;
+  for (const b of balances.values()) b.net = b.paid - b.share + b.sent - b.received;
   return balances;
 }
 

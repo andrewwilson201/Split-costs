@@ -48,11 +48,22 @@ service cloud.firestore {
         || d.category in ['food', 'drinks', 'activities', 'transport', 'accommodation', 'shopping', 'other'];
     }
 
+    // Optional extras: repayments, uneven splits, and who added or last changed it.
+    function validExpenseExtras(d) {
+      return (!('kind' in d) || d.kind == 'payment')
+        && (!('splitMode' in d) || d.splitMode in ['shares', 'exact'])
+        && (!('splitWeights' in d) || (d.splitWeights is map && d.splitWeights.size() <= 50))
+        && (!('createdBy' in d) || isShortString(d.createdBy, 1, 64))
+        && (!('updatedBy' in d) || isShortString(d.updatedBy, 1, 64));
+    }
+
     function validExpense(d) {
       return d.keys().hasOnly(['description', 'amountCents', 'paidBy', 'splitAmong', 'date', 'createdAt',
-                               'currency', 'rate', 'rateTo', 'rateSource', 'rateDate', 'category'])
+                               'currency', 'rate', 'rateTo', 'rateSource', 'rateDate', 'category',
+                               'kind', 'splitMode', 'splitWeights', 'createdBy', 'updatedBy'])
         && validExpenseCurrency(d)
         && validExpenseCategory(d)
+        && validExpenseExtras(d)
         && isShortString(d.description, 1, 80)
         && d.amountCents is int && d.amountCents > 0 && d.amountCents < 10000000000
         && isShortString(d.paidBy, 1, 64)

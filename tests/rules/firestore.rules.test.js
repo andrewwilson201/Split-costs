@@ -110,6 +110,18 @@ test('an expense can carry a known category', async () => {
   await assertFails(setDoc(ref, { ...expense, category: 'booze' }));
 });
 
+test('repayments, uneven splits and authors are accepted when well formed', async () => {
+  await setDoc(doc(db, 'trips', TRIP), trip);
+  const ref = doc(db, 'trips', TRIP, 'expenses', 'e1');
+  await assertSucceeds(setDoc(ref, { ...expense, kind: 'payment', splitAmong: ['p2'], createdBy: 'p1' }));
+  await assertSucceeds(setDoc(ref, { ...expense, splitMode: 'shares', splitWeights: { p1: 1, p2: 0.5 }, updatedBy: 'p2' }));
+  await assertSucceeds(setDoc(ref, { ...expense, splitMode: 'exact', splitWeights: { p1: 6000, p2: 3000 } }));
+  await assertFails(setDoc(ref, { ...expense, kind: 'refund' }));
+  await assertFails(setDoc(ref, { ...expense, splitMode: 'random' }));
+  await assertFails(setDoc(ref, { ...expense, splitWeights: [1, 2] }));
+  await assertFails(setDoc(ref, { ...expense, createdBy: '' }));
+});
+
 test('other collections are closed', async () => {
   await assertFails(setDoc(doc(db, 'other', 'x'), { a: 1 }));
 });
