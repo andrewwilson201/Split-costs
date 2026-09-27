@@ -13,18 +13,62 @@ A small web app for tracking shared spending on a trip and working out who owes 
   balance, then lists the fewest payments needed to even everything out
   (at most *n − 1* payments for *n* people). Use "Copy summary" to paste it
   into a group chat.
-- **Shared live**: when published as a claude.ai page, everyone the page is
-  shared with sees the same trips and can add expenses from their own device.
-  Changes show up for everyone straight away.
+- **Shared live**: everyone on the trip sees the same data and can add
+  expenses from their own phone. Changes show up for everyone straight away.
+  This works either on GitHub Pages with Firebase (no accounts needed) or as
+  a shared claude.ai page.
 
 Amounts are calculated in whole cents, so the results never drift from
 rounding. When an amount doesn't divide evenly, the leftover cents are spread
 one each across the people sharing it.
 
-## Sharing it with the group
+## Hosting on GitHub Pages with Firebase
 
-The app is published as a private claude.ai page with a shared database
-(`store.js` uses it automatically when available). To update the published
+The app is hosted free on GitHub Pages and stores trips in Cloud Firestore on
+Firebase's free plan. Nobody needs an account: each trip has a long random
+link, and anyone who has the link can view and edit that trip. Treat the link
+like a shared password and only send it to people on the trip.
+
+### 1. Create the Firebase project (about 5 minutes)
+
+1. Go to https://console.firebase.google.com and click **Create a project**.
+   Google Analytics isn't needed.
+2. In the left menu, open **Build → Firestore Database** and click **Create
+   database**. Pick a location near you and start in **production mode**.
+3. Open the **Rules** tab, replace everything with the contents of
+   [`firestore.rules`](firestore.rules), and click **Publish**.
+4. Go to **Project settings** (the gear icon) → **Your apps** and click the
+   **Web** icon (`</>`). Register the app with any nickname. Firebase Hosting
+   isn't needed.
+5. Copy the `firebaseConfig` values it shows into
+   [`firebase-config.js`](firebase-config.js), replacing `null`.
+
+These config values aren't secret. They only identify your project, and the
+rules decide what anyone can do.
+
+### 2. Turn on GitHub Pages
+
+1. In the GitHub repository, go to **Settings → Pages** and set **Source** to
+   **GitHub Actions**.
+2. Push to the default branch. The **Deploy to GitHub Pages** workflow runs
+   the tests and publishes the site. You can also run it from the **Actions**
+   tab. The site address appears in the workflow run and on the Pages
+   settings page.
+
+### 3. Share a trip
+
+Open the site, create a trip, and tap **Copy invite link**. Send the link to
+everyone on the trip. Each phone remembers the trips it has opened, so after
+the first visit the plain site address works too. The address bar always
+shows the current trip's link.
+
+The app keeps a copy of the data on each phone, so expenses added without
+signal appear straight away and sync once the phone is back online.
+
+## Sharing it as a claude.ai page
+
+The app can also be published as a private claude.ai page with a shared
+database (`store.js` uses it automatically when available). To update the published
 page after changing the code:
 
 ```sh
@@ -47,8 +91,9 @@ Browsers won't load ES modules from `file://`, so serve the folder:
 npm start            # or: python3 -m http.server 8000
 ```
 
-Then open http://localhost:8000. Outside claude.ai the app saves to the
-browser's `localStorage` instead, so data stays on that one device.
+Then open http://localhost:8000. With `firebase-config.js` left as `null`,
+the app saves to the browser's `localStorage`, so data stays on that one
+device.
 
 ## Tests
 
@@ -57,4 +102,13 @@ npm test
 ```
 
 The split and settle-up logic lives in `settle.js` and is covered by
-`tests/settle.test.js`, using Node's built-in test runner (Node 18+).
+`tests/settle.test.js`, using Node's built-in test runner (Node 18+). It
+needs no install.
+
+The Firestore security rules have their own tests, which run against the
+Firestore emulator (needs Java 11+):
+
+```sh
+npm install
+npm run test:rules
+```

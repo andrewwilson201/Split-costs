@@ -1,0 +1,64 @@
+rules_version = '2';
+
+// Split Costs has no accounts. A trip's long random id works like a secret
+// link: anyone who has it can open and edit that trip, and nobody can list
+// trips to find ones they weren't sent. The checks below also keep stored
+// data to the shapes the app writes.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function tripExists(tripId) {
+      return exists(/databases/$(database)/documents/trips/$(tripId));
+    }
+
+    function isShortString(value, minSize, maxSize) {
+      return value is string && value.size() >= minSize && value.size() <= maxSize;
+    }
+
+    function validTrip(d) {
+      return d.keys().hasOnly(['name', 'currency', 'createdAt'])
+        && isShortString(d.name, 0, 60)
+        && isShortString(d.currency, 0, 4)
+        && d.createdAt is number;
+    }
+
+    function validPerson(d) {
+      return d.keys().hasOnly(['name', 'createdAt'])
+        && isShortString(d.name, 1, 40)
+        && d.createdAt is number;
+    }
+
+    function validExpense(d) {
+      return d.keys().hasOnly(['description', 'amountCents', 'paidBy', 'splitAmong', 'date', 'createdAt'])
+        && isShortString(d.description, 1, 80)
+        && d.amountCents is int && d.amountCents > 0 && d.amountCents < 10000000000
+        && isShortString(d.paidBy, 1, 64)
+        && d.splitAmong is list && d.splitAmong.size() >= 1 && d.splitAmong.size() <= 50
+        && isShortString(d.date, 0, 10)
+        && d.createdAt is number;
+    }
+
+    match /trips/{tripId} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if tripId.size() >= 20 && validTrip(request.resource.data);
+      allow update: if validTrip(request.resource.data);
+      allow delete: if true;
+
+      match /people/{personId} {
+        allow read, delete: if tripExists(tripId);
+        allow create, update: if tripExists(tripId) && validPerson(request.resource.data);
+      }
+
+      match /expenses/{expenseId} {
+        allow read, delete: if tripExists(tripId);
+        allow create, update: if tripExists(tripId) && validExpense(request.resource.data);
+      }
+    }
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

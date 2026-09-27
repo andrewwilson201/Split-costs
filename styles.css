@@ -220,6 +220,9 @@ footer { text-align: center; padding-bottom: 24px; }
   white-space: nowrap;
 }
 
+.invite { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0 4px; }
+.invite .muted { overflow-wrap: anywhere; }
+
 .notice {
   background: var(--notice-bg);
   border-radius: 8px;

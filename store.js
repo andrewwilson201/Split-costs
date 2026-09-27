@@ -1,7 +1,9 @@
-// Data storage. When the app runs as a shared claude.ai page, it uses the
-// page's shared realtime database, so everyone on the trip sees the same
-// data. Anywhere else it falls back to a small localStorage-backed store with
-// the same interface, so the app still works when opened on its own.
+// Data storage. The app talks to one small document-store interface, backed by
+// whichever of these is available:
+//
+//   claude    Published as a shared claude.ai page: the page's shared database.
+//   firebase  firebase-config.js is filled in (e.g. on GitHub Pages): Cloud Firestore.
+//   local     Anything else: localStorage, on this device only.
 //
 // Layout:
 //   trips/{tripId}                      {name, currency, createdAt}
@@ -10,17 +12,201 @@
 //
 // People and expenses are separate documents so two people adding expenses
 // at the same moment never overwrite each other.
+//
+// In Firebase mode there are no accounts. A trip's random id is its secret,
+// and the database rules refuse to list trips. So each device remembers the
+// trips it has opened, and new people join through the trip's link.
 
+import { firebaseConfig } from './firebase-config.js';
+
+const FIREBASE_VERSION = '12.19.0';
 const LOCAL_KEY = 'split-costs:local-db:v1';
+const KNOWN_TRIPS_KEY = 'split-costs:known-trips';
 
 export async function openStore() {
-  let db = null;
+  let claudeDb = null;
   try {
-    db = (await window.claude?.use?.('db')) ?? null;
+    claudeDb = (await window.claude?.use?.('db')) ?? null;
   } catch {
-    db = null;
+    claudeDb = null;
   }
-  return db ? { db, shared: true } : { db: createLocalDb(), shared: false };
+  if (claudeDb) return collectionStore(claudeDb, 'claude');
+
+  if (firebaseConfig?.projectId) {
+    try {
+      return linkStore(await createFirebaseDb(firebaseConfig));
+    } catch (e) {
+      console.error('Could not connect to Firebase, saving on this device instead.', e);
+    }
+  }
+  return collectionStore(createLocalDb(), 'local');
+}
+
+/** A store where every trip can be listed (claude.ai shared db, localStorage). */
+function collectionStore(db, mode) {
+  return {
+    db,
+    mode,
+    watchTrips: (next, onError) =>
+      db.collection('trips').onSnapshot((snap) => next(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), onError),
+    rememberTrip() {},
+    forgetTrip() {},
+    onLateWriteError() {},
+  };
+}
+
+/** A store where trips are only reachable by id, so this device keeps its own list. */
+function linkStore(db) {
+  const readKnown = () => {
+    try {
+      const ids = JSON.parse(localStorage.getItem(KNOWN_TRIPS_KEY));
+      return Array.isArray(ids) ? ids : [];
+    } catch {
+      return [];
+    }
+  };
+  const writeKnown = (ids) => {
+    try {
+      localStorage.setItem(KNOWN_TRIPS_KEY, JSON.stringify(ids));
+    } catch {
+      // Not critical: the trip link still works.
+    }
+  };
+
+  const trips = new Map();
+  const unsubs = new Map();
+  const awaitingFirst = new Set();
+  let listener = null;
+  let errorListener = null;
+
+  const emit = () => {
+    if (listener && awaitingFirst.size === 0) listener([...trips.values()]);
+  };
+
+  const watch = (id) => {
+    if (unsubs.has(id)) return;
+    awaitingFirst.add(id);
+    unsubs.set(id, db.doc(`trips/${id}`).onSnapshot((snap) => {
+      if (snap.exists) {
+        trips.set(id, { id, ...snap.data() });
+      } else if (!snap.metadata.fromCache) {
+        // Deleted, or the link was wrong.
+        store.forgetTrip(id);
+      }
+      awaitingFirst.delete(id);
+      emit();
+    }, (e) => {
+      awaitingFirst.delete(id);
+      errorListener?.(e);
+      emit();
+    }));
+  };
+
+  const store = {
+    db,
+    mode: 'firebase',
+    watchTrips(next, onError) {
+      listener = next;
+      errorListener = onError;
+      readKnown().forEach(watch);
+      emit();
+      return () => { unsubs.forEach((u) => u()); listener = null; };
+    },
+    rememberTrip(id) {
+      if (!readKnown().includes(id)) writeKnown([...readKnown(), id]);
+      watch(id);
+    },
+    forgetTrip(id) {
+      writeKnown(readKnown().filter((x) => x !== id));
+      unsubs.get(id)?.();
+      unsubs.delete(id);
+      awaitingFirst.delete(id);
+      trips.delete(id);
+      emit();
+    },
+    onLateWriteError: db.onLateWriteError,
+  };
+  return store;
+}
+
+async function createFirebaseDb(config) {
+  const base = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}`;
+  const [{ initializeApp }, fs] = await Promise.all([
+    import(`${base}/firebase-app.js`),
+    import(`${base}/firebase-firestore.js`),
+  ]);
+  const { emulator, ...appConfig } = config;
+  const app = initializeApp(appConfig);
+
+  let firestore;
+  try {
+    // Keep a copy on the device so the app works with patchy signal.
+    firestore = fs.initializeFirestore(app, {
+      localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
+    });
+  } catch {
+    firestore = fs.getFirestore(app);
+  }
+  if (emulator) {
+    const [host, port] = emulator.split(':');
+    fs.connectFirestoreEmulator(firestore, host, Number(port));
+  }
+
+  // Firestore only confirms a write once the server has it, which never
+  // happens while offline. The change already shows locally, so stop waiting
+  // after a moment and report any later failure separately.
+  let lateErrorHandler = () => {};
+  const settle = (promise) => {
+    let done = false;
+    const tracked = promise.finally(() => { done = true; });
+    return Promise.race([tracked, new Promise((r) => setTimeout(r, 1500))]).then(() => {
+      if (!done) tracked.catch((e) => lateErrorHandler(e));
+    });
+  };
+
+  const wrapDocSnap = (s) => ({
+    id: s.id,
+    exists: s.exists(),
+    data: () => s.data(),
+    metadata: s.metadata,
+  });
+  const wrapQuerySnap = (s) => ({
+    docs: s.docs.map(wrapDocSnap),
+    size: s.size,
+    empty: s.empty,
+    metadata: s.metadata,
+  });
+
+  const docRef = (path) => {
+    const ref = fs.doc(firestore, path);
+    return {
+      id: ref.id,
+      path,
+      get: async () => wrapDocSnap(await fs.getDoc(ref)),
+      set: (data) => settle(fs.setDoc(ref, data)),
+      update: (data) => settle(fs.updateDoc(ref, data)),
+      delete: () => settle(fs.deleteDoc(ref)),
+      onSnapshot: (next, error) =>
+        fs.onSnapshot(ref, { includeMetadataChanges: false }, (s) => next(wrapDocSnap(s)), (e) => error?.(e)),
+      collection: (sub) => collectionRef(`${path}/${sub}`),
+    };
+  };
+
+  const collectionRef = (path) => {
+    const ref = fs.collection(firestore, path);
+    return {
+      path,
+      doc: (id = crypto.randomUUID()) => docRef(`${path}/${id}`),
+      get: async () => wrapQuerySnap(await fs.getDocs(ref)),
+      onSnapshot: (next, error) => fs.onSnapshot(ref, (s) => next(wrapQuerySnap(s)), (e) => error?.(e)),
+    };
+  };
+
+  return {
+    doc: docRef,
+    collection: collectionRef,
+    onLateWriteError: (fn) => { lateErrorHandler = fn; },
+  };
 }
 
 function createLocalDb() {
@@ -31,6 +217,7 @@ function createLocalDb() {
     docs = {};
   }
   const listeners = new Set();
+  const metadata = { fromCache: false, hasPendingWrites: false };
 
   const persist = () => {
     try {
@@ -48,9 +235,9 @@ function createLocalDb() {
       .sort()
       .map((p) => {
         const data = docs[p];
-        return { id: p.slice(prefix.length), exists: true, data: () => data };
+        return { id: p.slice(prefix.length), exists: true, data: () => data, metadata };
       });
-    return { docs: list, size: list.length, empty: list.length === 0 };
+    return { docs: list, size: list.length, empty: list.length === 0, metadata };
   };
 
   const docRef = (path) => ({
@@ -58,7 +245,7 @@ function createLocalDb() {
     path,
     async get() {
       const data = docs[path];
-      return { id: path.split('/').pop(), exists: !!data, data: () => data };
+      return { id: path.split('/').pop(), exists: !!data, data: () => data, metadata };
     },
     async set(data) {
       docs[path] = structuredClone(data);
@@ -79,11 +266,6 @@ function createLocalDb() {
   const collectionRef = (colPath) => ({
     path: colPath,
     doc: (id = crypto.randomUUID()) => docRef(`${colPath}/${id}`),
-    async add(data) {
-      const ref = docRef(`${colPath}/${crypto.randomUUID()}`);
-      await ref.set(data);
-      return ref;
-    },
     async get() {
       return snapshotOf(colPath);
     },
@@ -95,7 +277,7 @@ function createLocalDb() {
     },
   });
 
-  // Keep other tabs in sync, like the shared store does across devices.
+  // Keep other tabs in sync, like the shared stores do across devices.
   window.addEventListener('storage', (e) => {
     if (e.key !== LOCAL_KEY) return;
     try {

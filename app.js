@@ -22,6 +22,7 @@ function savePrefs() {
 
 // ---------- Live data (mirrors the store) ----------
 
+let store = null;
 let db = null;
 let trips = [];
 let people = [];
@@ -32,7 +33,8 @@ let unsubscribeTrip = [];
 const byCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0) || a.id.localeCompare(b.id);
 const docsOf = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-const currentTrip = () => trips.find((t) => t.id === prefs.tripId) || null;
+// The chosen trip, or the first one while it loads or if it was deleted.
+const currentTrip = () => trips.find((t) => t.id === prefs.tripId) || trips[0] || null;
 const personName = (id) => people.find((p) => p.id === id)?.name ?? 'Someone removed';
 const money = (cents) => formatCents(cents, currentTrip()?.currency ?? '');
 const uid = () => crypto.randomUUID();
@@ -89,7 +91,9 @@ async function write(fn) {
     const code = e?.code;
     if (code === 'invalid_argument') {
       showNotice("Couldn't save. You may only have view access, so ask the trip owner to share it with you as an Editor.");
-    } else if (code === 'quota_exceeded') {
+    } else if (code === 'permission-denied') {
+      showNotice("Couldn't save. The trip may have been deleted, or a name or description is too long.");
+    } else if (code === 'quota_exceeded' || code === 'resource-exhausted') {
       showNotice('Storage is full. Delete an old trip to make room.');
     } else {
       showNotice("Couldn't save that change. Check your connection and try again.");
@@ -155,6 +159,7 @@ async function createTrip() {
     createdAt: Date.now(),
   }));
   if (!ok) return;
+  store.rememberTrip(id);
   prefs.tripId = id;
   prefs.tab = 'people';
   savePrefs();
@@ -194,6 +199,7 @@ async function deleteTrip(trip) {
     }
     await tripDoc(trip.id).delete();
   });
+  store.forgetTrip(trip.id);
 }
 
 // ---------- Tabs ----------
@@ -222,7 +228,7 @@ $('#add-person-form').addEventListener('submit', async (e) => {
   }
   input.value = '';
   input.focus();
-  await write(() => peopleCol(prefs.tripId).doc(uid()).set({ name, createdAt: Date.now() }));
+  await write(() => peopleCol(currentTrip().id).doc(uid()).set({ name, createdAt: Date.now() }));
 });
 $('#person-name').addEventListener('input', (e) => e.target.setCustomValidity(''));
 
@@ -245,7 +251,7 @@ function renderPeople() {
         const name = input.value.trim();
         renamingId = null;
         if (save && name && name !== p.name) {
-          await write(() => peopleCol(prefs.tripId).doc(p.id).update({ name }));
+          await write(() => peopleCol(currentTrip().id).doc(p.id).update({ name }));
         }
         render();
       };
@@ -266,7 +272,7 @@ function renderPeople() {
       h('button', { type: 'button', class: 'icon', onclick: () => { renamingId = p.id; render(); } }, 'Rename'),
       inUse
         ? h('button', { type: 'button', class: 'icon', disabled: true, title: 'Remove them from expenses first' }, 'Remove')
-        : confirmButton('Remove', 'Tap to confirm', () => write(() => peopleCol(prefs.tripId).doc(p.id).delete()),
+        : confirmButton('Remove', 'Tap to confirm', () => write(() => peopleCol(currentTrip().id).doc(p.id).delete()),
           { class: 'icon danger' }),
     );
   }));
@@ -375,7 +381,7 @@ $('#expense-form').addEventListener('submit', async (e) => {
   error.textContent = '';
 
   const data = { description, amountCents, paidBy, splitAmong, date };
-  const col = expensesCol(prefs.tripId);
+  const col = expensesCol(currentTrip().id);
   const id = editingId;
   const submit = $('#expense-submit');
   submit.disabled = true;
@@ -426,7 +432,7 @@ function renderExpenses() {
       h('button', { type: 'button', class: 'icon', onclick: () => startEdit(e) }, 'Edit'),
       confirmButton('Delete', 'Tap to confirm', async () => {
         if (editingId === e.id) resetExpenseForm();
-        await write(() => expensesCol(prefs.tripId).doc(e.id).delete());
+        await write(() => expensesCol(currentTrip().id).doc(e.id).delete());
       }, { class: 'icon danger' }),
     );
   }));
@@ -494,13 +500,12 @@ $('#copy-summary').addEventListener('click', () => {
 function renderTripSelect() {
   const sel = $('#trip-select');
   sel.replaceChildren(...trips.map((t) =>
-    h('option', { value: t.id, selected: t.id === prefs.tripId }, t.name || 'Untitled trip')));
+    h('option', { value: t.id, selected: t.id === currentTrip()?.id }, t.name || 'Untitled trip')));
   sel.hidden = trips.length === 0;
 }
 
 function render() {
   if (!db) return;
-  if (!currentTrip()) prefs.tripId = trips[0]?.id ?? null;
   const trip = currentTrip();
   subscribeToTrip(trip?.id ?? null);
 
@@ -510,6 +515,9 @@ function render() {
   $('#no-trip').hidden = !!trip;
   $('#trip-view').hidden = !trip;
   if (!trip) return;
+  if (store.mode === 'firebase' && location.hash !== `#${trip.id}`) {
+    history.replaceState(null, '', `#${trip.id}`); // the address bar is always the trip's link
+  }
 
   if (document.activeElement !== $('#trip-name')) $('#trip-name').value = trip.name;
   if (document.activeElement !== $('#trip-currency')) $('#trip-currency').value = trip.currency;
@@ -529,15 +537,59 @@ function render() {
   );
 }
 
+// ---------- Invite link (Firebase mode) ----------
+
+const tripLink = (id) => `${location.origin}${location.pathname}#${id}`;
+
+$('#copy-link').addEventListener('click', () => {
+  const trip = currentTrip();
+  const status = $('#link-status');
+  const link = tripLink(trip.id);
+  navigator.clipboard.writeText(link).then(
+    () => { status.textContent = 'Link copied. Send it to everyone on the trip.'; },
+    () => { status.textContent = `Copy this link: ${link}`; },
+  );
+  setTimeout(() => { status.textContent = ''; }, 6000);
+});
+
+/** Open a trip from a shared link like …/#<tripId>. */
+let linkedTripId = null;
+function openLinkedTrip() {
+  const id = location.hash.slice(1);
+  if (!/^[A-Za-z0-9-]{20,}$/.test(id) || id === currentTrip()?.id) return;
+  linkedTripId = id;
+  store.rememberTrip(id);
+  prefs.tripId = id;
+  savePrefs();
+  resetExpenseForm();
+  render();
+}
+
 // ---------- Start ----------
 
-const store = await openStore();
+store = await openStore();
 db = store.db;
-$('#storage-note').textContent = store.shared
-  ? 'Shared live with everyone who has this page.'
-  : 'Saved in this browser only.';
+$('#storage-note').textContent = {
+  claude: 'Shared live with everyone who has this page.',
+  firebase: 'Shared live with everyone who has the trip link.',
+  local: 'Saved in this browser only.',
+}[store.mode];
+$('#invite').hidden = store.mode !== 'firebase';
+store.onLateWriteError(() => {
+  showNotice("A change made while offline couldn't be saved. The trip may have been deleted.");
+});
 
-db.collection('trips').onSnapshot((snap) => {
-  trips = docsOf(snap).sort(byCreated);
+if (store.mode === 'firebase') {
+  window.addEventListener('hashchange', openLinkedTrip);
+  openLinkedTrip();
+}
+
+store.watchTrips((list) => {
+  trips = list.sort(byCreated);
+  if (linkedTripId && !trips.some((t) => t.id === linkedTripId)) {
+    showNotice("That trip link doesn't match any trip. It may have been deleted.");
+    history.replaceState(null, '', location.pathname);
+  }
+  linkedTripId = null;
   render();
 }, onSubscribeError);
