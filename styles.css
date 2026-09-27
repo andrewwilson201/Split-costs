@@ -234,7 +234,7 @@ body.with-photo .card select:focus {
   gap: 4px;
   padding: 4px;
   margin-bottom: 16px;
-  background: rgba(8, 14, 18, 0.5);
+  background: rgba(8, 14, 18, 0.72);
   border: 1px solid var(--glass-border);
   border-radius: 14px;
   -webkit-backdrop-filter: blur(14px);
