@@ -42,10 +42,17 @@ service cloud.firestore {
         && (!('rateDate' in d) || isShortString(d.rateDate, 0, 10));
     }
 
+    // Optional category chosen by hand; without it the app guesses from the description.
+    function validExpenseCategory(d) {
+      return !('category' in d)
+        || d.category in ['food', 'drinks', 'activities', 'transport', 'accommodation', 'shopping', 'other'];
+    }
+
     function validExpense(d) {
       return d.keys().hasOnly(['description', 'amountCents', 'paidBy', 'splitAmong', 'date', 'createdAt',
-                               'currency', 'rate', 'rateTo', 'rateSource', 'rateDate'])
+                               'currency', 'rate', 'rateTo', 'rateSource', 'rateDate', 'category'])
         && validExpenseCurrency(d)
+        && validExpenseCategory(d)
         && isShortString(d.description, 1, 80)
         && d.amountCents is int && d.amountCents > 0 && d.amountCents < 10000000000
         && isShortString(d.paidBy, 1, 64)

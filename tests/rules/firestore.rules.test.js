@@ -103,6 +103,13 @@ test('a trip can have one small JPEG cover photo', async () => {
   await assertFails(setDoc(doc(db, 'trips', 'b6f7a0de-0000-4f5e-9a8d-000000000000', 'photo', 'cover'), { dataUrl, updatedAt: 1 }));
 });
 
+test('an expense can carry a known category', async () => {
+  await setDoc(doc(db, 'trips', TRIP), trip);
+  const ref = doc(db, 'trips', TRIP, 'expenses', 'e1');
+  await assertSucceeds(setDoc(ref, { ...expense, category: 'drinks' }));
+  await assertFails(setDoc(ref, { ...expense, category: 'booze' }));
+});
+
 test('other collections are closed', async () => {
   await assertFails(setDoc(doc(db, 'other', 'x'), { a: 1 }));
 });

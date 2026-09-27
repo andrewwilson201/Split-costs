@@ -18,6 +18,11 @@ A small web app for tracking shared spending on a trip and working out who owes 
 - **Cover photos**: each trip can have a photo, which fills the background
   whenever the trip is open. Photos are shrunk on the phone to about 200 KB
   and stored with the trip, so no separate file storage is needed.
+- **Categories and spending chart**: each expense is sorted into Food,
+  Drinks, Activities, Transport, Accommodation, Shopping or Other from its
+  description ("Dinner" is Food, "Terrace beer" is Drinks), and the category
+  can be changed on the expense. The Spending tab shows a stacked bar per day
+  split by category, with category totals and a table view.
 - **Settle up**: shows what each person paid, their fair share and their
   balance, then lists the fewest payments needed to even everything out
   (at most *n − 1* payments for *n* people). Use "Copy summary" to paste it

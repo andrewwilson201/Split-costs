@@ -5,6 +5,7 @@ import {
 } from './currency.js';
 import { openStore } from './store.js';
 import { compressPhoto, isPhotoDataUrl } from './photo.js';
+import { CATEGORIES, categoryLabel, guessCategory, expenseCategory, isCategory, spendingByDay, niceScale } from './categories.js';
 
 // ---------- Per-viewer preferences (which trip / tab is open) ----------
 
@@ -16,8 +17,9 @@ function loadPrefs() {
     return {};
   }
 }
-const TABS = ['expenses', 'settle', 'people', 'settings'];
+const TABS = ['expenses', 'spending', 'settle', 'settings'];
 const prefs = { tripId: null, tab: 'expenses', ...loadPrefs() };
+if (prefs.tab === 'people') prefs.tab = 'settings'; // People moved into the Trip tab
 if (!TABS.includes(prefs.tab)) prefs.tab = 'expenses';
 function savePrefs() {
   try {
@@ -241,6 +243,17 @@ function fillCurrencySelect(select) {
 }
 fillCurrencySelect($('#trip-currency'));
 fillCurrencySelect($('#expense-currency'));
+
+// "Auto" follows the description as it's typed; picking a category overrides it.
+$('#expense-category').replaceChildren(
+  h('option', { value: '' }, 'Auto'),
+  ...CATEGORIES.map((c) => h('option', { value: c.id }, c.label)),
+);
+function updateAutoCategory() {
+  const guess = guessCategory($('#expense-desc').value);
+  $('#expense-category').options[0].textContent = $('#expense-desc').value.trim() ? `Auto: ${categoryLabel(guess)}` : 'Auto';
+}
+$('#expense-desc').addEventListener('input', updateAutoCategory);
 
 let pendingCurrency = null;
 
@@ -605,6 +618,7 @@ function resetExpenseForm() {
   currencyChosen = false;
   rateRequest++;
   rateState = emptyRate();
+  updateAutoCategory();
   $('#expense-error').textContent = '';
   $('#split-options').replaceChildren();
   knownSplitIds = new Set();
@@ -631,6 +645,8 @@ $('#expense-form').addEventListener('submit', async (e) => {
   // Expenses in the main currency don't store one, like expenses from before
   // currencies were added.
   const data = { description, amountCents, paidBy, splitAmong, date };
+  const category = $('#expense-category').value;
+  if (isCategory(category)) data.category = category;
   if (currency !== tripCurrency()) {
     data.currency = currency;
     if (rateState.loading) return void (error.textContent = 'Still getting the exchange rate. Try again in a moment.');
@@ -669,6 +685,8 @@ function startEdit(expense) {
     ? { ...emptyRate(), source: expense.rateSource === 'manual' ? 'manual' : 'market', rate: expense.rate, date: expense.rateDate, from: cur, to: trip }
     : emptyRate();
   $('#expense-desc').value = expense.description;
+  $('#expense-category').value = isCategory(expense.category) ? expense.category : '';
+  updateAutoCategory();
   $('#expense-amount').value = minorToInput(expense.amountCents, cur);
   $('#expense-payer').value = expense.paidBy;
   $('#expense-date').value = expense.date || '';
@@ -717,7 +735,9 @@ function renderExpenses() {
         avatar(e.paidBy),
         h('div', { class: 'main' },
           h('div', { class: 'title' }, e.description),
-          h('div', { class: 'sub' }, `${personName(e.paidBy)} ${paid} · split between ${splitText}`),
+          h('div', { class: 'sub' },
+            h('span', { class: `cat-tag cat-${expenseCategory(e)}` }, categoryLabel(expenseCategory(e))),
+            ` ${personName(e.paidBy)} ${paid} · split between ${splitText}`),
           inTrip == null ? h('div', { class: 'sub needs-rate' }, `No exchange rate into ${trip}. Tap to add one.`) : null,
         ),
         h('div', { class: inTrip == null ? 'amount needs-rate' : 'amount' }, inTrip == null ? original : money(inTrip)),
@@ -725,6 +745,123 @@ function renderExpenses() {
     ));
   }
   list.replaceChildren(...rows);
+}
+
+// ---------- Spending ----------
+
+const shortDay = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
+
+/** Round axis labels, e.g. £100 rather than £100.00. */
+const axisMoney = (minor) => {
+  const text = money(minor);
+  return /[.,]00$/.test(text) ? text.slice(0, -3) : text;
+};
+
+let hideSpendingTooltip = () => {};
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest?.('#spend-chart')) hideSpendingTooltip();
+});
+
+function renderSpending() {
+  const { usable, missing } = expensesInTripCurrency();
+  const { days, totals, total } = spendingByDay(usable);
+  const empty = days.length === 0;
+  $('#spend-empty').hidden = !empty;
+  $('#spend-body').hidden = empty;
+  $('#spend-total').textContent = empty ? '' : money(total);
+  if (empty) return;
+
+  const present = CATEGORIES.filter((c) => totals[c.id] > 0);
+  $('#spend-legend').replaceChildren(...present.map((c) =>
+    h('li', {},
+      h('span', { class: `swatch cat-${c.id}`, 'aria-hidden': 'true' }),
+      h('span', { class: 'legend-label' }, c.label),
+      h('span', { class: 'legend-value' }, `${money(totals[c.id])} · ${Math.round((totals[c.id] / total) * 100)}%`),
+    )));
+
+  const { max, step } = niceScale(Math.max(...days.map((d) => d.total)));
+  const showTotals = days.length <= 10;
+  const chart = $('#spend-chart');
+  chart.style.setProperty('--days', days.length);
+  chart.setAttribute('aria-label', `Spending per day by category, ${days.length} days`);
+
+  const grid = h('div', { class: 'chart-grid', 'aria-hidden': 'true' });
+  for (let v = 0; v <= max; v += step) {
+    const line = h('div', { class: v === 0 ? 'gridline baseline' : 'gridline' }, h('span', {}, axisMoney(v)));
+    line.style.bottom = `${(v / max) * 100}%`;
+    grid.append(line);
+  }
+
+  const columns = days.map((d, i) => {
+    const segments = CATEGORIES.filter((c) => d.byCategory[c.id] > 0).map((c) => {
+      const seg = h('span', { class: `segment cat-${c.id}` });
+      seg.style.flexGrow = d.byCategory[c.id];
+      return seg;
+    });
+    const stack = h('span', { class: 'bar-stack' }, segments);
+    stack.style.height = `${(d.total / max) * 100}%`;
+    const breakdown = CATEGORIES.filter((c) => d.byCategory[c.id] > 0)
+      .map((c) => `${c.label} ${money(d.byCategory[c.id])}`).join(', ');
+    return h('button', {
+      type: 'button',
+      class: 'day-column',
+      'data-index': i,
+      'aria-label': `${dayLabel(d.date)}: ${d.total ? `${money(d.total)} (${breakdown})` : 'nothing spent'}`,
+    },
+    h('span', { class: 'plot' },
+      showTotals && d.total ? h('span', { class: 'bar-total', style: `bottom: ${(d.total / max) * 100}%` }, axisMoney(d.total)) : null,
+      stack),
+    h('span', { class: 'day-label' }, shortDay(d.date)));
+  });
+
+  const tooltip = h('div', { class: 'chart-tooltip', role: 'status', hidden: true });
+  const showDay = (i) => {
+    const d = days[i];
+    columns.forEach((c, j) => c.classList.toggle('active', j === i));
+    tooltip.replaceChildren(
+      h('div', { class: 'tooltip-head' }, h('span', {}, dayLabel(d.date)), h('strong', {}, money(d.total))),
+      ...(d.total
+        ? CATEGORIES.filter((c) => d.byCategory[c.id] > 0).slice().reverse().map((c) =>
+          h('div', { class: 'tooltip-row' },
+            h('span', { class: `swatch cat-${c.id}`, 'aria-hidden': 'true' }),
+            h('span', {}, c.label),
+            h('span', { class: 'tooltip-value' }, money(d.byCategory[c.id]))))
+        : [h('div', { class: 'tooltip-row muted' }, 'Nothing spent')]),
+    );
+    tooltip.hidden = false;
+    // Keep the tooltip inside the chart, next to the day.
+    const col = columns[i];
+    const left = col.offsetLeft + col.offsetWidth / 2;
+    tooltip.style.left = `${Math.min(Math.max(left, 90), chart.scrollWidth - 90)}px`;
+  };
+  const hide = () => {
+    tooltip.hidden = true;
+    columns.forEach((c) => c.classList.remove('active'));
+  };
+  // Mouse: hover shows a day. Touch: tap a day to show it, tap outside the chart to close.
+  columns.forEach((c, i) => {
+    c.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') showDay(i); });
+    c.addEventListener('focus', () => showDay(i));
+    c.addEventListener('click', () => showDay(i));
+  });
+  chart.onpointerleave = (e) => { if (e.pointerType === 'mouse') hide(); };
+  hideSpendingTooltip = hide;
+
+  chart.replaceChildren(grid, h('div', { class: 'columns' }, columns), tooltip);
+
+  $('#spend-warning').textContent = missing
+    ? `${missing === 1 ? '1 expense has' : `${missing} expenses have`} no exchange rate into ${tripCurrency()} and ${missing === 1 ? "isn't" : "aren't"} included.`
+    : '';
+
+  // The same numbers as a table.
+  $('#spend-table').replaceChildren(
+    h('thead', {}, h('tr', {}, h('th', {}, 'Day'), ...present.map((c) => h('th', {}, c.label)), h('th', {}, 'Total'))),
+    h('tbody', {}, ...days.map((d) => h('tr', {},
+      h('th', {}, dayLabel(d.date)),
+      ...present.map((c) => h('td', {}, d.byCategory[c.id] ? money(d.byCategory[c.id]) : '–')),
+      h('td', {}, money(d.total))))),
+    h('tfoot', {}, h('tr', {}, h('th', {}, 'Total'), ...present.map((c) => h('td', {}, money(totals[c.id]))), h('td', {}, money(total)))),
+  );
 }
 
 // ---------- Settle up ----------
@@ -827,6 +964,7 @@ function render() {
   renderPeople();
   renderExpenseForm();
   renderExpenses();
+  if (prefs.tab === 'spending') renderSpending();
   renderSettle();
 
   const deleteSlot = $('#delete-trip-slot');

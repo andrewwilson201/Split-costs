@@ -61,8 +61,8 @@
 
       <nav class="tabs" role="tablist" aria-label="Trip sections">
         <button type="button" role="tab" data-tab="expenses">Expenses</button>
+        <button type="button" role="tab" data-tab="spending">Spending</button>
         <button type="button" role="tab" data-tab="settle">Settle up</button>
-        <button type="button" role="tab" data-tab="people">People</button>
         <button type="button" role="tab" data-tab="settings">Trip</button>
       </nav>
 
@@ -94,9 +94,12 @@
                 <button type="button" class="link" id="rate-reset" hidden>Use market rate</button>
               </p>
             </div>
+            <label>Paid by
+              <select id="expense-payer" required></select>
+            </label>
             <div class="row">
-              <label class="grow">Paid by
-                <select id="expense-payer" required></select>
+              <label class="grow">Category
+                <select id="expense-category"></select>
               </label>
               <label class="date-field">Date
                 <input id="expense-date" type="date">
@@ -130,6 +133,28 @@
         </section>
       </div>
 
+      <!-- Spending -->
+      <div class="tab-panel stack" data-panel="spending">
+        <section class="card">
+          <div class="card-head">
+            <h2>Spending by day</h2>
+            <span id="spend-total" class="figure"></span>
+          </div>
+          <p id="spend-empty" class="muted" hidden>Add some expenses to see spending by day.</p>
+          <div id="spend-body">
+            <ul id="spend-legend" class="legend" aria-label="Categories"></ul>
+            <div class="chart-scroll">
+              <div id="spend-chart" class="spend-chart"></div>
+            </div>
+            <p id="spend-warning" class="small muted"></p>
+            <details class="table-view">
+              <summary>Show as a table</summary>
+              <div class="table-wrap"><table id="spend-table"></table></div>
+            </details>
+          </div>
+        </section>
+      </div>
+
       <!-- Settle up -->
       <div class="tab-panel stack" data-panel="settle">
         <section class="card">
@@ -147,8 +172,8 @@
         </section>
       </div>
 
-      <!-- People -->
-      <div class="tab-panel stack" data-panel="people">
+      <!-- Trip settings -->
+      <div class="tab-panel stack" data-panel="settings">
         <section class="card">
           <h2>Who's on the trip?</h2>
           <form id="add-person-form" class="row add-person">
@@ -157,10 +182,7 @@
           </form>
           <ul id="people-list" class="list"></ul>
         </section>
-      </div>
 
-      <!-- Trip settings -->
-      <div class="tab-panel stack" data-panel="settings">
         <section class="card form">
           <h2>Trip details</h2>
           <label>Trip name
